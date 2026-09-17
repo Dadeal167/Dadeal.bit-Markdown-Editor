@@ -1,0 +1,25 @@
+# 依赖与构建产物
+node_modules
+dist
+*.tsbuildinfo
+
+# 本地验证的临时产物（截图、报告、探测用的登录配置等，绝不入库）
+.probe
+.zhihu-publish-output
+
+# 内部文档（开发笔记 / 交接单：含本地排查记录），只留在本地
+NEXT.md
+docs/开发文档.md
+
+# 开发过程中的一次性产物（探测脚本、只针对本机交付文件夹的检查脚本）
+scripts/research/
+scripts/check-my-build.mjs
+
+# 自己用的那个版本（带鼠标特效）的构建产物绝不进仓库——对外只发布纯净版
+Dadealbit Markdown 编辑器-特效版.html
+
+# 编辑器 / 系统杂物
+.DS_Store
+Thumbs.db
+*.log
+*.tmp
