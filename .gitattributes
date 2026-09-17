@@ -1,0 +1,9 @@
+# 单文件产物必须按字节原样进出仓库
+#
+# 原因：`Dadealbit Markdown 编辑器.html` 是构建产物，它的 sha256 要和
+# GitHub Release 附件、桌面分享版、dist/index.html 完全一致（校验脚本会比对）。
+# 但本机 git 开了 core.autocrlf=true，默认会在检出时把 LF 换成 CRLF，
+# 于是"刚 checkout 出来的文件"和构建产物差了几万个字节的换行，
+# 校验会莫名其妙报"根目录 HTML 与 dist 产物不一致"（实测踩过）。
+# 这里关掉这个文件的换行转换：进出都是构建出来的原始字节。
+Dadealbit*.html -text

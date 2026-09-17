@@ -1,0 +1,2395 @@
+/* ==================================================================
+   设计 token
+   默认用知乎写文章页的实测色值（.probe/zhihu/structure3.json）。
+   如果更偏好规格书 4.3 的调色板，把下面 --zh-blue / --zh-text /
+   --zh-secondary / --zh-hover 四行换成注释里的值即可（一处切换）。
+   ------------------------------------------------------------------
+   规格书调色板：主色 #0084FF｜悬停浅蓝 #E1F0FF｜正文黑 #121212
+                次要文字 #8590A6｜边框 #EBEBEB
+   ================================================================== */
+:root {
+  --zh-bg: #f8f8fa;
+  --zh-card: #ffffff;
+  --zh-line: #ebeced;
+  --zh-blue: #1772f6; /* 规格书：#0084FF */
+  --zh-blue-hover: #1165e8;
+  --zh-blue-soft: #e1f0ff;
+  --zh-text: #191b1f; /* 规格书：#121212 */
+  --zh-secondary: #8491a5; /* 规格书：#8590A6 */
+  --zh-icon: #373a40;
+  --zh-hover: #f6f6f6; /* 规格书：按钮悬停 #F6F6F6 */
+  --zh-placeholder: #9196a1;
+  --zh-radius: 4px;
+  --zh-warn: #e08a1e; /* 防呆提示：温和的橙色 */
+  --zh-font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', sans-serif;
+  --zh-serif: KaTeX_Main, 'Times New Roman', serif; /* 公式一律衬线 */
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--zh-bg);
+  font-family: var(--zh-font);
+  color: var(--zh-text);
+}
+
+/* ============ 页面骨架：灰底 + 居中白卡（白卡撑满视口高度，像知乎那样） ============ */
+.editor-page {
+  min-height: 100vh;
+  padding-bottom: 52px; /* 正好让出固定底栏，白卡一直延伸到状态栏上沿 */
+}
+
+.editor-shell {
+  display: flex;
+  justify-content: center;
+  /* 视口高度 - 工具栏 46px - 状态栏 52px */
+  min-height: calc(100vh - 98px);
+}
+
+.editor-card {
+  width: 694px;
+  max-width: 94vw;
+  margin: 0 auto;
+  background: var(--zh-card);
+  padding: 0 20px;
+  display: flex;
+  flex-direction: column;
+  /* 视口高 - 工具栏 46 - 状态栏 52，再留半屏：往下滑始终还有白纸可写（对齐知乎的编辑区） */
+  min-height: calc(100vh - 98px + 50vh);
+}
+
+/* ============ 顶栏工具栏（规格：白底 + 1px 下边框；尺寸取中 46px 高） ============ */
+.zh-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: #fff;
+  border-bottom: 1px solid var(--zh-line);
+}
+
+.zh-toolbar__inner {
+  /* 规格：顶部菜单栏铺满整宽，左右内边距 16px */
+  max-width: none;
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2.5px 16px; /* 40px 按钮 + 上下 2.5px + 1px 边框 = 46px */
+  /* 宽屏永不换行（保证 46px）；注意这里不能用 overflow 滚动——
+     那会把按钮的下拉面板裁掉（绝对定位的下拉会跟着被裁剪）。
+     窄屏才允许换行，宁可高一点也不能让菜单看不见。 */
+  flex-wrap: nowrap;
+}
+
+@media (max-width: 1279px) {
+  .zh-toolbar__inner {
+    flex-wrap: wrap;
+  }
+}
+
+.zh-toolbar__group {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0 2px;
+  flex: 0 0 auto;
+}
+
+.zh-toolbar__group + .zh-toolbar__group {
+  border-left: 1px solid var(--zh-line);
+}
+
+.zh-tb-wrap {
+  position: relative;
+}
+
+/* ============ 公式输入的 TeX 补全 ============ */
+.zh-mathsource-wrap {
+  position: relative;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.zh-autocomplete {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  z-index: 3;
+  min-width: 240px;
+  padding: 6px;
+  background: #fff;
+  border: 1px solid var(--zh-line);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(25, 27, 31, 0.18);
+}
+
+.zh-autocomplete__hint {
+  padding: 2px 6px 6px;
+  font-size: 11px;
+  color: var(--zh-secondary);
+}
+
+.zh-autocomplete__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 5px;
+  background: none;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--zh-text);
+  cursor: pointer;
+  text-align: left;
+}
+
+.zh-autocomplete__item--on {
+  background: var(--zh-blue-soft);
+}
+
+.zh-autocomplete__face {
+  min-width: 34px;
+  display: inline-flex;
+  align-items: center;
+  color: var(--zh-text);
+}
+
+.zh-autocomplete__cmd {
+  font-family: 'SFMono-Regular', Consolas, monospace;
+  font-size: 12px;
+  color: var(--zh-blue);
+}
+
+.zh-autocomplete__label {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--zh-secondary);
+}
+
+/* ============ 字体（正文字号 / 字体 / 文字颜色）下拉 ============ */
+.zh-typomenu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 25;
+  width: 292px;
+  padding: 10px;
+  background: #fff;
+  border: 1px solid var(--zh-line);
+  border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(25, 27, 31, 0.18);
+}
+
+.zh-typomenu__section {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin: 8px 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #64748b;
+}
+
+.zh-typomenu__section:first-child {
+  margin-top: 0;
+}
+
+.zh-typomenu__hint {
+  margin-left: auto;
+  font-weight: 400;
+  font-size: 11px;
+  color: var(--zh-blue);
+}
+
+.zh-typomenu__hint--warn {
+  color: var(--zh-secondary);
+}
+
+.zh-typomenu__row {
+  display: flex;
+  gap: 4px;
+}
+
+.zh-typomenu__chip {
+  flex: 1;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: 5px 0;
+  border: 1px solid #e2e5ea;
+  border-radius: 5px;
+  background: #fff;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--zh-icon);
+  cursor: pointer;
+}
+
+.zh-typomenu__chip:hover {
+  border-color: var(--zh-blue);
+  color: var(--zh-blue);
+}
+
+.zh-typomenu__chip--on {
+  border-color: var(--zh-blue);
+  background: var(--zh-blue-soft);
+  color: var(--zh-blue);
+}
+
+.zh-typomenu__chipnum {
+  font-size: 10px;
+  color: var(--zh-secondary);
+}
+
+.zh-typomenu__list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.zh-typomenu__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 8px;
+  border: none;
+  border-radius: 5px;
+  background: none;
+  font-size: 14px;
+  color: var(--zh-text);
+  cursor: pointer;
+  text-align: left;
+}
+
+.zh-typomenu__item:hover {
+  background: var(--zh-hover);
+}
+
+.zh-typomenu__item--on {
+  background: var(--zh-blue-soft);
+  color: var(--zh-blue);
+}
+
+.zh-typomenu__label {
+  font-size: 11px;
+  color: var(--zh-secondary);
+  font-family: var(--zh-font);
+}
+
+.zh-typomenu__colors {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.zh-typomenu__swatch {
+  width: 22px;
+  height: 22px;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 50%;
+  cursor: pointer;
+  padding: 0;
+}
+
+.zh-typomenu__swatch:hover {
+  transform: scale(1.12);
+}
+
+.zh-typomenu__custom {
+  width: 22px;
+  height: 22px;
+  border: 1px dashed #c3cad6;
+  border-radius: 50%;
+  overflow: hidden;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.zh-typomenu__custom input {
+  width: 30px;
+  height: 30px;
+  border: none;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+.zh-typomenu__clear {
+  margin-left: auto;
+  border: 1px solid #e2e5ea;
+  border-radius: 5px;
+  background: #fff;
+  padding: 3px 8px;
+  font-size: 11px;
+  font-family: inherit;
+  color: var(--zh-secondary);
+  cursor: pointer;
+}
+
+.zh-typomenu__clear:hover {
+  border-color: var(--zh-blue);
+  color: var(--zh-blue);
+}
+
+.zh-typomenu__foot {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--zh-line);
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--zh-secondary);
+}
+
+/* 自己安装的字体 */
+.zh-typomenu__install {
+  margin-left: auto;
+  border: 1px solid var(--zh-blue);
+  border-radius: 5px;
+  background: #fff;
+  color: var(--zh-blue);
+  font-size: 11px;
+  font-family: inherit;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+
+.zh-typomenu__install:hover {
+  background: var(--zh-blue-soft);
+}
+
+.zh-typomenu__empty {
+  padding: 4px 2px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--zh-secondary);
+}
+
+.zh-typomenu__msg {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--zh-blue);
+}
+
+.zh-typecustom {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.zh-typecustom__pick {
+  flex: 1;
+  min-width: 0;
+}
+
+.zh-typecustom__del {
+  border: none;
+  background: none;
+  color: var(--zh-secondary);
+  font-size: 12px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.zh-typecustom__del:hover {
+  background: #fdecea;
+  color: #d93025;
+}
+
+/* ============ 文档列表下拉（工具栏「文档」） ============ */
+.zh-docmenu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 25;
+  width: 300px;
+  background: #fff;
+  border: 1px solid var(--zh-line);
+  border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(25, 27, 31, 0.18);
+  overflow: hidden;
+}
+
+.zh-docmenu__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--zh-line);
+  font-size: 12px;
+  color: var(--zh-secondary);
+}
+
+.zh-docmenu__new {
+  border: 1px solid var(--zh-blue);
+  border-radius: 5px;
+  background: #fff;
+  color: var(--zh-blue);
+  font-size: 12px;
+  font-family: inherit;
+  padding: 3px 9px;
+  cursor: pointer;
+}
+
+.zh-docmenu__new:hover {
+  background: var(--zh-blue-soft);
+}
+
+.zh-docmenu__list {
+  max-height: 300px;
+  overflow: auto;
+  padding: 4px;
+}
+
+.zh-docmenu__item {
+  display: flex;
+  align-items: center;
+  border-radius: 6px;
+}
+
+.zh-docmenu__item--active {
+  background: var(--zh-blue-soft);
+}
+
+.zh-docmenu__open {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 6px 8px;
+  border: none;
+  background: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-family: inherit;
+  text-align: left;
+}
+
+.zh-docmenu__open:hover {
+  background: var(--zh-hover);
+}
+
+.zh-docmenu__title {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  color: var(--zh-text);
+}
+
+.zh-docmenu__item--active .zh-docmenu__title {
+  color: var(--zh-blue);
+  font-weight: 600;
+}
+
+.zh-docmenu__time {
+  font-size: 11px;
+  color: var(--zh-secondary);
+}
+
+.zh-docmenu__del {
+  border: none;
+  background: none;
+  color: var(--zh-secondary);
+  font-size: 12px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.zh-docmenu__del:hover {
+  background: #fdecea;
+  color: #d93025;
+}
+
+.zh-docmenu__foot {
+  padding: 6px 10px;
+  border-top: 1px solid var(--zh-line);
+  font-size: 11px;
+  color: var(--zh-secondary);
+}
+
+/* 单个按钮：规格 48×40，图标 18px + 文字 12px 竖排，悬停 #F6F6F6 + 圆角 4px */
+.zh-btn {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  height: 40px;
+  /* 每加一个按钮都要重量宽度：25 个按钮时内容 1296px 会溢出 1280，所以内边距收到 4px/4px */
+  min-width: 44px;
+  flex: 0 0 auto;
+  padding: 4px 4px;
+  border: none;
+  background: transparent;
+  border-radius: var(--zh-radius);
+  cursor: pointer;
+  color: var(--zh-icon);
+  font-size: 12px;
+  line-height: 1;
+  font-family: inherit;
+}
+
+.zh-btn:hover {
+  background: var(--zh-hover);
+  color: var(--zh-blue);
+}
+
+.zh-btn--active {
+  color: var(--zh-blue);
+}
+
+.zh-btn svg {
+  width: 18px;
+  height: 18px;
+}
+
+.zh-glyph {
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 18px;
+  font-family: Georgia, 'Times New Roman', serif;
+}
+
+.zh-glyph--b {
+  font-weight: 800;
+}
+
+.zh-glyph--i {
+  font-style: italic;
+}
+
+.zh-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 40;
+  min-width: 154px;
+  padding: 6px;
+  background: #fff;
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(25, 27, 31, 0.12);
+  border: 1px solid var(--zh-line);
+}
+
+.zh-menu__item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  background: transparent;
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--zh-text);
+  cursor: pointer;
+  white-space: nowrap;
+  text-align: left;
+  font-family: inherit;
+}
+
+.zh-menu__item:hover {
+  background: var(--zh-hover);
+  color: var(--zh-blue);
+}
+
+/* 菜单里的"当前选中"项（比如主题） */
+.zh-menu__item--on {
+  color: var(--zh-blue);
+  font-weight: 600;
+}
+
+/* ============ 「保存」格式菜单（保存 / 导出合并在这里） ============ */
+.zh-menu--save {
+  min-width: 300px;
+  max-width: 340px;
+}
+
+/* 状态栏那个按钮在页面底部，菜单要往上弹 */
+.zh-menu--up {
+  top: auto;
+  bottom: calc(100% + 8px);
+  left: auto;
+  right: 0;
+}
+
+.zh-menu__title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px 8px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--zh-line);
+  font-size: 12px;
+  color: var(--zh-secondary);
+}
+
+.zh-menu__item--tall {
+  display: block;
+  padding: 8px 10px;
+  white-space: normal;
+}
+
+.zh-menu__row {
+  display: block;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.zh-menu__hint {
+  display: block;
+  margin-top: 2px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--zh-secondary);
+}
+
+.zh-menu__item--tall:hover .zh-menu__hint {
+  color: inherit;
+  opacity: 0.85;
+}
+
+/* 状态栏的「保存 .md」：文字保持原样，只多一个小三角表示能选格式
+   （小三角一律用伪元素画，不能进按钮文字：有脚本按文字定位按钮） */
+.zh-save-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.zh-save-pill__label::after,
+.zh-btn__label--caret::after {
+  content: '▾';
+  margin-left: 3px;
+  font-size: 10px;
+  opacity: 0.75;
+}
+
+.zh-menu__check {
+  color: var(--zh-blue);
+  font-size: 12px;
+}
+
+/* ============ 标题 ============ */
+.zh-title {
+  width: 100%;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-family: inherit;
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--zh-text);
+  padding: 12px 0 18px;
+  resize: none;
+}
+
+/* 键盘用户要能看见焦点在哪（原来 outline:none 之后没有任何替代提示） */
+.zh-title:focus-visible {
+  box-shadow: 0 0 0 2px var(--zh-blue-soft);
+  border-radius: 4px;
+}
+
+.zh-title::placeholder {
+  color: var(--zh-placeholder);
+  font-weight: 400;
+}
+
+/* ============ 正文（TipTap 内容区） ============ */
+.zh-editor-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* EditorContent 外面还套了一层没有类名的 div：不把它撑开的话，
+   文末留白就落在编辑区外面，点它不会把光标放到文末 */
+.zh-editor-body > div {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.zh-prose {
+  outline: none;
+  /* 撑满正文区：文末那一大片空白属于编辑区本身，点一下光标就落到文末、能接着写 */
+  flex: 1;
+  /* 字号 / 字体由工具栏「字体」控制（变量写在 :root 上，导出时也用同一套） */
+  font-size: var(--doc-font-size, 16px);
+  font-family: var(--doc-font-family, inherit);
+  line-height: 1.6;
+  color: var(--zh-text);
+  padding-bottom: 30vh;
+}
+
+.zh-prose > * + * {
+  margin-top: 0.85em;
+}
+
+.zh-prose p {
+  margin: 0;
+}
+
+/* 标题用 em：跟着正文字号一起缩放（默认 16px 时是 24/21/19px，和原来一致） */
+.zh-prose h1 {
+  font-size: 1.5em;
+  font-weight: 600;
+  margin: 0.8em 0 0.4em;
+}
+
+.zh-prose h2 {
+  font-size: 1.31em;
+  font-weight: 600;
+  margin: 0.8em 0 0.4em;
+}
+
+.zh-prose h3 {
+  font-size: 1.19em;
+  font-weight: 600;
+  margin: 0.8em 0 0.4em;
+}
+
+.zh-prose ul,
+.zh-prose ol {
+  padding-left: 1.5em;
+}
+
+.zh-prose li {
+  margin: 0.2em 0;
+}
+
+.zh-prose blockquote {
+  border-left: 3px solid #d3d6db;
+  padding-left: 12px;
+  color: var(--zh-secondary);
+  margin: 0.6em 0;
+}
+
+.zh-prose hr {
+  border: none;
+  border-top: 1px solid var(--zh-line);
+  margin: 1.2em 0;
+}
+
+.zh-prose a {
+  color: var(--zh-blue);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.zh-prose a:hover {
+  text-decoration: underline;
+}
+
+.zh-prose code {
+  background: #f2f3f5;
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-family: 'SFMono-Regular', Consolas, 'Courier New', monospace;
+  font-size: 0.92em;
+}
+
+.zh-prose pre {
+  background: #f6f8fa;
+  border-radius: 6px;
+  padding: 12px 14px;
+  overflow: auto;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.zh-prose pre code {
+  background: none;
+  padding: 0;
+  font-size: 14px;
+}
+
+.zh-prose img {
+  max-width: 100%;
+  border-radius: 6px;
+}
+
+.zh-prose table {
+  border-collapse: collapse;
+  width: 100%;
+  table-layout: fixed;
+}
+
+.zh-prose th,
+.zh-prose td {
+  border: 1px solid var(--zh-line);
+  padding: 6px 10px;
+  vertical-align: top;
+  position: relative;
+}
+
+.zh-prose th {
+  background: #fafafa;
+  font-weight: 600;
+  text-align: left;
+}
+
+.zh-prose .selectedCell:after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: rgba(23, 114, 246, 0.12);
+  pointer-events: none;
+}
+
+/* 空文档占位（TipTap Placeholder） */
+.zh-prose p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  color: var(--zh-secondary);
+  float: left;
+  height: 0;
+  pointer-events: none;
+}
+
+/* 代码高亮（lowlight/highlight.js 类名的最小子集） */
+.hljs-comment,
+.hljs-quote {
+  color: #6a737d;
+  font-style: italic;
+}
+
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-tag {
+  color: #d73a49;
+}
+
+.hljs-string,
+.hljs-attr,
+.hljs-attribute {
+  color: #032f62;
+}
+
+.hljs-number,
+.hljs-literal,
+.hljs-built_in {
+  color: #005cc5;
+}
+
+.hljs-title,
+.hljs-function,
+.hljs-section {
+  color: #6f42c1;
+}
+
+/* ============ 代码块的语言选择器（长在代码块自己头上） ============
+   .zh-codeblock 是 NodeView 的外壳；那行语言栏**不属于文档内容**，
+   导出 .md / .html 走的是文档序列化，所以导出结果里没有它。 */
+.zh-codeblock {
+  position: relative;
+}
+
+.zh-codeblock__bar {
+  position: relative; /* 语言菜单挂在按钮下面，而不是整块的最底下 */
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: -26px; /* 让语言按钮浮在代码块右上角，不额外占高度 */
+  padding: 6px 8px 0 0;
+}
+
+.zh-codeblock__lang {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--zh-line);
+  background: var(--zh-hover);
+  color: var(--zh-secondary);
+  border-radius: 4px;
+  padding: 1px 7px;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  opacity: 0.72;
+  max-width: 62%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.zh-codeblock:hover .zh-codeblock__lang,
+.zh-codeblock__lang[aria-expanded='true'] {
+  opacity: 1;
+  color: var(--zh-blue);
+  border-color: var(--zh-blue);
+}
+
+.zh-codeblock__caret {
+  width: 0;
+  height: 0;
+  border-left: 3.5px solid transparent;
+  border-right: 3.5px solid transparent;
+  border-top: 4px solid currentColor;
+  opacity: 0.75;
+}
+
+.zh-codeblock__menu {
+  top: calc(100% + 4px);
+  left: auto;
+  right: 0;
+  max-height: 300px;
+  overflow-y: auto;
+  min-width: 176px;
+  padding: 4px;
+  z-index: 30;
+}
+.zh-codeblock__item {
+  font-family: ui-monospace, Consolas, 'Courier New', monospace;
+  font-size: 12.5px;
+  padding: 4px 10px;
+}
+/* "自动识别"不是语言名，用正常字体 */
+.zh-codeblock__item--auto {
+  font-family: inherit;
+  margin-bottom: 2px;
+}
+.zh-codeblock__sep {
+  height: 1px;
+  margin: 3px 4px 4px;
+  background: var(--zh-line);
+}
+.zh-codeblock__item--active {
+  color: var(--zh-blue);
+  font-weight: 600;
+}
+
+/* ============ 数学节点（正文里就是一块可点的积木） ============ */
+.math-node {
+  cursor: pointer;
+  border-radius: 4px;
+  padding: 0 2px;
+  transition: background 0.12s ease;
+}
+
+.math-node:hover {
+  background: rgba(23, 114, 246, 0.08);
+}
+
+.math-node--selected {
+  background: rgba(23, 114, 246, 0.14);
+}
+
+.math-node--block {
+  display: block;
+  text-align: center;
+  padding: 10px 0;
+  margin: 10px 0;
+}
+
+/* 渲染不出来的公式：红框提示"这里有问题，点我改"，而不是只丢一行红字在那里 */
+.math-node--error {
+  background: rgba(214, 69, 69, 0.08);
+  box-shadow: inset 0 0 0 1px rgba(214, 69, 69, 0.45);
+}
+
+.math-node--error::after {
+  content: '写法有问题，点击修改';
+  margin-left: 6px;
+  font-size: 11px;
+  color: #d64545;
+  white-space: nowrap;
+}
+
+.math-node--block.math-node--error::after {
+  display: block;
+  margin: 6px 0 0;
+}
+
+.math-node__placeholder {
+  display: inline-block;
+  color: var(--zh-placeholder);
+  border: 1px dashed #c9ced6;
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 14px;
+}
+
+.math-node__hint {
+  display: none;
+  margin-left: 6px;
+  font-size: 11px;
+  color: var(--zh-blue);
+}
+
+.math-node:hover .math-node__hint {
+  display: inline;
+}
+
+/* ============ 视频嵌入 ============ */
+.video-node {
+  margin: 12px 0;
+}
+
+.video-node__frame {
+  position: relative;
+  width: 100%;
+  padding-top: 56.25%;
+  background: #000;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.video-node__frame iframe {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+
+.video-node__caption {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--zh-secondary);
+}
+
+/* ============ 存到知乎草稿箱 ============ */
+.zh-modal--zhihu {
+  width: 520px;
+  max-width: 94vw;
+}
+
+.zh-zhihu__recheck {
+  border: none;
+  background: none;
+  color: var(--zh-blue);
+  font-size: 12px;
+  font-family: inherit;
+  padding: 0 0 10px;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+/* 「重新检测助手」和「检查一下能不能用（自检）」并排；窄窗口时自动换行 */
+.zh-zhihu__row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+.zh-zhihu__row .zh-zhihu__recheck {
+  padding: 0 0 10px;
+}
+.zh-zhihu__recheck:disabled {
+  color: var(--zh-dim);
+  cursor: default;
+  text-decoration: none;
+}
+
+/* 知乎面板：推荐路线「导出 .md 给知乎导入」 */
+.zh-zhihu__export {
+  border: 1px solid var(--zh-line);
+  border-radius: var(--zh-radius);
+  padding: 12px 14px;
+  margin-bottom: 14px;
+  background: var(--zh-hover);
+}
+
+.zh-zhihu__export-title {
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.zh-zhihu__export-steps {
+  margin: 0 0 10px;
+  padding-left: 20px;
+  font-size: 13px;
+  line-height: 1.9;
+  color: var(--zh-secondary);
+}
+
+.zh-zhihu__export-btns {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.zh-zhihu__or {
+  font-size: 12px;
+  color: var(--zh-secondary);
+  margin: 0 0 8px;
+}
+
+/* 「助手已连接」那一行里的登录入口 */
+.zh-zhihu__login {  margin-left: 10px;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
+  font-size: 12px;
+  padding: 1px 8px;
+  cursor: pointer;
+}
+
+.zh-zhihu__msg {
+  margin: -6px 0 12px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--zh-blue);
+}
+
+.zh-zhihu__state {
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  margin-bottom: 12px;
+  background: var(--zh-hover);
+}
+
+.zh-zhihu__state--ok {
+  color: #188038;
+  background: #e8f5e9;
+}
+
+.zh-zhihu__state--bad {
+  color: #d93025;
+  background: #fdecea;
+}
+
+.zh-zhihu__field {
+  display: block;
+  margin-bottom: 12px;
+}
+
+.zh-zhihu__field > span {
+  display: block;
+  font-size: 12px;
+  color: var(--zh-secondary);
+  margin-bottom: 6px;
+}
+
+.zh-zhihu__field input {
+  width: 100%;
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid #e2e5ea;
+  border-radius: 6px;
+  font-family: 'SFMono-Regular', Consolas, monospace;
+  font-size: 13px;
+  outline: none;
+}
+
+.zh-zhihu__field input:focus {
+  border-color: var(--zh-blue);
+}
+
+.zh-zhihu__tips {  font-size: 12px;
+  line-height: 1.9;
+  color: var(--zh-secondary);
+  margin-bottom: 12px;
+}
+
+.zh-zhihu__phase {
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: var(--zh-blue-soft);
+  color: var(--zh-blue);
+  font-size: 13px;
+}
+
+.zh-zhihu__result {
+  padding: 10px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1.8;
+}
+
+.zh-zhihu__result--ok {
+  background: #e8f5e9;
+  color: #188038;
+}
+
+.zh-zhihu__result--bad {
+  background: #fdecea;
+  color: #d93025;
+}
+
+/* 图床设置：不开助手也能上传图片（编辑器直接用 GitHub 令牌） */
+.zh-zhihu__bed {
+  margin-top: 12px;
+  border: 1px solid var(--zh-line);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.zh-zhihu__bed-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 9px 12px;
+  border: none;
+  background: var(--zh-hover);
+  color: var(--zh-text);
+  font-family: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.zh-zhihu__bed-dot {
+  width: 8px;
+  height: 8px;
+  margin-left: auto;
+  border-radius: 50%;
+  background: #cfd4dc;
+}
+
+.zh-zhihu__bed-dot--on {
+  background: #34a853;
+}
+
+.zh-zhihu__bed-body {
+  padding: 10px 12px 12px;
+}
+
+.zh-zhihu__bed-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.zh-zhihu__dim {
+  color: var(--zh-secondary);
+  font-size: 12px;
+}
+
+.zh-zhihu__warn {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  color: var(--zh-warn);
+  font-size: 12px;
+}
+
+/* ============ 快捷键设置弹窗 ============ */
+.zh-modal--shortcuts {
+  width: 560px;
+  max-width: 94vw;
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.zh-scbody {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px 16px;
+}
+
+.zh-schint {
+  margin: 0 0 12px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--zh-secondary);
+}
+
+.zh-schint b {
+  color: var(--zh-blue);
+  font-weight: 600;
+}
+
+.zh-scgroup {
+  margin-bottom: 14px;
+}
+
+.zh-scgroup__title {
+  margin: 0 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #64748b;
+}
+
+.zh-scrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  border-bottom: 1px dashed var(--zh-line);
+}
+
+.zh-scrow__label {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--zh-text);
+}
+
+.zh-sckey {
+  min-width: 132px;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid #e2e5ea;
+  border-radius: 5px;
+  background: #fafafa;
+  font-family: 'SFMono-Regular', Consolas, monospace;
+  font-size: 12px;
+  color: var(--zh-text);
+  cursor: pointer;
+}
+
+.zh-sckey:hover {
+  border-color: var(--zh-blue);
+  color: var(--zh-blue);
+}
+
+.zh-sckey--empty {
+  color: var(--zh-secondary);
+  font-style: italic;
+}
+
+.zh-sckey--recording {
+  border-color: var(--zh-blue);
+  color: #fff;
+  background: var(--zh-blue);
+  font-style: normal;
+}
+
+.zh-scrow__clear,
+.zh-scrow__reset {
+  border: none;
+  background: none;
+  padding: 4px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--zh-secondary);
+  cursor: pointer;
+}
+
+.zh-scrow__clear:hover,
+.zh-scrow__reset:hover {
+  background: var(--zh-hover);
+  color: var(--zh-blue);
+}
+
+.zh-scfoot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--zh-line);
+}
+
+.zh-scnote {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--zh-secondary);
+}
+
+.zh-scnote--on {
+  color: var(--zh-warn);
+}
+
+.zh-help__edit {
+  margin-left: auto;
+  border: none;
+  background: none;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--zh-blue);
+  cursor: pointer;
+  padding: 0;
+}
+
+.zh-help__code--empty {
+  color: var(--zh-secondary);
+  font-style: italic;
+}
+
+/* ============ 表格浮动操作条（光标在表格里时出现） ============ */
+.zh-tablemenu {
+  position: fixed;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 6px;
+  background: #fff;
+  border: 1px solid var(--zh-line);
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(25, 27, 31, 0.14);
+}
+
+.zh-tablemenu__size {
+  padding: 0 6px 0 2px;
+  margin-right: 4px;
+  font-size: 11px;
+  color: var(--zh-secondary);
+  white-space: nowrap;
+  border-right: 1px solid var(--zh-line);
+}
+
+.zh-tablemenu__btn {
+  border: none;
+  background: none;
+  padding: 4px 8px;
+  border-radius: 5px;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--zh-icon);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.zh-tablemenu__btn:hover:not(:disabled) {
+  background: var(--zh-hover);
+  color: var(--zh-blue);
+}
+
+.zh-tablemenu__btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.zh-tablemenu__btn--danger {
+  color: #d93025;
+}
+
+.zh-tablemenu__btn--danger:hover {
+  background: #fdecea;
+  color: #d93025;
+}
+
+/* ============ 大纲导航 ============ */
+.zh-outline {
+  position: fixed;
+  right: 20px;
+  top: 92px;
+  width: 200px;
+  max-height: 70vh;
+  overflow: auto;
+  background: #fff;
+  border: 1px solid var(--zh-line);
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(25, 27, 31, 0.08);
+  padding: 10px;
+  z-index: 25;
+}
+
+.zh-outline__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.zh-outline__close {
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: var(--zh-secondary);
+  font-size: 12px;
+}
+
+.zh-outline__item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: none;
+  font-size: 13px;
+  color: var(--zh-icon);
+  padding: 5px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: inherit;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.zh-outline__item:hover {
+  background: var(--zh-hover);
+  color: var(--zh-blue);
+}
+
+.zh-outline__item--h2 {
+  padding-left: 18px;
+  color: #5b6472;
+}
+
+.zh-outline__item--h3 {
+  padding-left: 30px;
+  color: var(--zh-secondary);
+}
+
+.zh-outline__empty {
+  font-size: 13px;
+  color: var(--zh-secondary);
+}
+
+/* ============ 底部状态栏 ============ */
+.zh-statusbar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 30;
+  background: #fff;
+  border-top: 1px solid var(--zh-line);
+}
+
+.zh-statusbar__inner {
+  max-width: 694px;
+  margin: 0 auto;
+  height: 52px;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 0 20px;
+  font-size: 13px;
+  color: var(--zh-secondary);
+}
+
+.zh-statusbar__spacer {
+  flex: 1;
+}
+
+/* 存储写满时的常驻提醒 */
+.zh-statusbar__draft--warn {
+  color: #d93025;
+  font-weight: 600;
+}
+
+/* Markdown 输入开关 */
+.zh-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: none;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+  color: var(--zh-secondary);
+  font-size: 13px;
+  font-family: inherit;
+}
+
+.zh-switch:hover {
+  color: var(--zh-text);
+}
+
+.zh-switch__track {
+  position: relative;
+  width: 30px;
+  height: 16px;
+  border-radius: 8px;
+  background: #d5d9dd;
+  transition: background 0.15s ease;
+  flex: 0 0 auto;
+}
+
+.zh-switch__knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.15s ease;
+}
+
+.zh-switch--on .zh-switch__track {
+  background: var(--zh-blue);
+}
+
+.zh-switch--on .zh-switch__knob {
+  transform: translateX(14px);
+}
+
+.zh-switch__state {
+  color: var(--zh-blue);
+  font-size: 12px;
+}
+
+.zh-switch:not(.zh-switch--on) .zh-switch__state {
+  color: var(--zh-secondary);
+}
+
+.zh-pill {
+  border: none;
+  background: rgba(132, 145, 165, 0.1);
+  color: var(--zh-secondary);
+  padding: 0 16px;
+  height: 34px;
+  border-radius: var(--zh-radius);
+  font-size: 14px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.zh-pill:hover {
+  background: rgba(132, 145, 165, 0.18);
+}
+
+.zh-pill--primary {
+  background: var(--zh-blue);
+  color: #fff;
+}
+
+.zh-pill--primary:hover {
+  background: var(--zh-blue-hover);
+}
+
+/* ============ 文档体检提示条（图片打不开 / 公式渲染不出来） ============ */
+.zh-fixbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  /* 和下面的白卡对齐（卡片宽 694px） */
+  width: 694px;
+  max-width: 94vw;
+  box-sizing: border-box;
+  margin: 12px auto 0;
+  padding: 10px 14px;
+  background: #fff8e8;
+  border: 1px solid #f0dcae;
+  border-radius: var(--zh-radius);
+  font-size: 13px;
+  line-height: 1.6;
+  color: #8a5a10;
+}
+
+.zh-fixbar--ok {
+  background: #eefaef;
+  border-color: #bfe6c4;
+  color: #1f7a33;
+}
+
+.zh-fixbar__text {
+  flex: 1 1 320px;
+}
+
+.zh-fixbar__spacer {
+  flex: 1 1 0;
+}
+
+.zh-fixbar .zh-pill {
+  height: 30px;
+  padding: 0 12px;
+  font-size: 13px;
+  flex: 0 0 auto;
+}
+
+.zh-fixbar__close {
+  border: none;
+  background: transparent;
+  color: inherit;
+  opacity: 0.6;
+  font-size: 14px;
+  cursor: pointer;
+  padding: 2px 4px;
+  flex: 0 0 auto;
+}
+
+.zh-fixbar__close:hover {
+  opacity: 1;
+}
+
+/* ============ 通用弹窗 ============ */.zh-modal-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.zh-modal {
+  width: 660px;
+  max-width: 92vw;
+  max-height: 84vh;
+  background: #fff;
+  border-radius: 8px;
+  box-shadow: 0 10px 36px rgba(25, 27, 31, 0.2);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.zh-modal__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 16px 20px 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+/* 帮助弹窗标题里的副标题（应用名 + 说明） */
+.zh-modal__sub {
+  margin-left: 8px;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--zh-secondary);
+}
+
+.zh-modal__close {
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: var(--zh-secondary);
+  font-size: 14px;
+  padding: 8px 12px;
+  border-radius: 6px;
+}
+
+.zh-modal__close:hover {
+  background: var(--zh-hover);
+  color: var(--zh-text);
+}
+
+.zh-modal__body {
+  padding: 12px 20px 20px;
+  overflow: auto;
+}
+
+.zh-modal__footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  padding: 12px 20px;
+  border-top: 1px solid var(--zh-line);
+}
+
+.zh-btn-solid {
+  background: var(--zh-blue);
+  color: #fff;
+  border: none;
+  border-radius: var(--zh-radius);
+  padding: 0 16px;
+  height: 36px;
+  font-size: 14px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.zh-btn-solid:hover {
+  background: var(--zh-blue-hover);
+}
+
+.zh-btn-solid:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.zh-btn-plain {
+  background: #fff;
+  border: 1px solid #e2e5ea;
+  color: var(--zh-icon);
+  border-radius: var(--zh-radius);
+  padding: 0 16px;
+  height: 36px;
+  font-size: 14px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.zh-btn-plain:hover {
+  background: var(--zh-hover);
+}
+
+/* ============ 公式弹窗（知乎骨架 + latexLive 分类面板 + 功能行） ============ */
+.zh-modal--math {
+  width: 880px;
+  height: 660px;
+  max-width: 96vw;
+  max-height: 94vh;
+  position: relative;
+}
+
+/* 全屏编辑 */
+.zh-modal--math-full {
+  width: 96vw;
+  height: 94vh;
+}
+
+/* 顶栏：标题 + 公式排版（行内/行间）+ 展开 */
+.zh-mathhead {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 44px;
+  flex: 0 0 44px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--zh-line);
+}
+
+.zh-mathhead__title {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.zh-mathhead__mode {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--zh-secondary);
+}
+
+.zh-mathmode__btn {
+  font-size: 12px;
+  font-family: inherit;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid #e2e5ea;
+  border-radius: var(--zh-radius);
+  background: #fff;
+  color: var(--zh-secondary);
+  cursor: pointer;
+}
+
+.zh-mathmode__btn--active {
+  color: var(--zh-blue);
+  border-color: var(--zh-blue);
+  background: var(--zh-blue-soft);
+}
+
+/* 分类行 */
+.zh-mathcats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--zh-line);
+}
+
+.zh-mathcat {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 30px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--zh-icon);
+  background: #fff;
+  border: 1px solid #e2e5ea;
+  border-radius: 5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.zh-mathcat:hover {
+  border-color: var(--zh-blue);
+  color: var(--zh-blue);
+}
+
+.zh-mathcat--active {
+  border-color: var(--zh-blue);
+  color: var(--zh-blue);
+  background: var(--zh-blue-soft);
+}
+
+.zh-mathcat__caret {
+  font-size: 9px;
+}
+
+.zh-mathclose {
+  margin-left: auto;
+  border: none;
+  background: none;
+  color: var(--zh-secondary);
+  font-size: 14px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.zh-mathclose:hover {
+  background: var(--zh-hover);
+  color: var(--zh-text);
+}
+
+.zh-mathbody {
+  position: relative;
+  flex: 1;
+  display: flex;
+  gap: 12px;
+  padding: 10px 14px 0;
+  min-height: 0;
+}
+
+.zh-mathpane {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.zh-mathpane__label {
+  font-size: 12px;
+  color: var(--zh-secondary);
+  margin-bottom: 6px;
+}
+
+/* 分类面板：浮层，覆盖在输入区上方（和 latexLive 一样） */
+.zh-mathpanel {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  padding: 12px 14px;
+  background: #fff;
+  border: 1px solid var(--zh-line);
+  border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(25, 27, 31, 0.18);
+  overflow: auto;
+}
+
+.zh-mathpanel__close {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  border: none;
+  background: none;
+  color: var(--zh-secondary);
+  font-size: 13px;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 4px;
+}
+
+.zh-mathpanel__close:hover {
+  background: var(--zh-hover);
+  color: var(--zh-text);
+}
+
+.zh-mathsec {
+  margin-bottom: 12px;
+}
+
+.zh-mathsec__title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #64748b;
+  margin: 4px 0 6px;
+}
+
+.zh-mathsec__grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+/* 符号按钮（latexLive 实测：4px 圆角、#cbd5e1 描边、#f8fafc 底） */
+.zh-symbol {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 40px;
+  min-height: 34px;
+  padding: 2px 8px;
+  background: #f8fafc;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  cursor: pointer;
+  color: #283345;
+  font-size: 15px;
+}
+
+.zh-symbol:hover {
+  background: #fff;
+  border-color: var(--zh-blue);
+}
+
+.zh-symbol .katex {
+  font-size: 15px;
+}
+
+/* 源码输入框：就是主输入区（字号由功能行的 − 16 + 控制） */
+.zh-mathsource {
+  flex: 1;
+  min-height: 300px;
+  padding: 12px;
+  border: 1px solid #e2e5ea;
+  border-radius: 8px;
+  font-family: 'SFMono-Regular', Consolas, 'Courier New', monospace;
+  font-size: var(--mf-size, 16px);
+  line-height: 1.6;
+  resize: none;
+  outline: none;
+  color: var(--zh-text);
+}
+
+.zh-mathsource:focus {
+  border-color: var(--zh-blue);
+}
+
+.zh-mathpane--preview .zh-formula__preview {
+  flex: 1;
+  min-height: 110px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #fafafa;
+  border: 1px solid var(--zh-line);
+  border-radius: 8px;
+  padding: 12px;
+  overflow: auto;
+  font-size: 18px;
+}
+
+.zh-mathhint {
+  padding: 6px 14px;
+  min-height: 24px;
+  font-size: 12px;
+  color: var(--zh-secondary);
+}
+
+.zh-mathhint--warn {
+  color: var(--zh-warn);
+}
+
+/* 功能行：颜色 / 字体 / 字号 / 环境 / 清空 + 源码|可视化 + 字号步进 */
+.zh-mathoptions {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  border-top: 1px solid var(--zh-line);
+  background: #fafafa;
+}
+
+.zh-optbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.zh-optbar--right {
+  margin-left: auto;
+}
+
+.zh-opt {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid #e2e5ea;
+  border-radius: 5px;
+  background: #fff;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--zh-icon);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.zh-opt:hover {
+  border-color: var(--zh-blue);
+  color: var(--zh-blue);
+}
+
+.zh-opt--active {
+  border-color: var(--zh-blue);
+  color: var(--zh-blue);
+  background: var(--zh-blue-soft);
+}
+
+.zh-opt--danger {
+  color: #d93025;
+}
+
+.zh-opt--stepper {
+  width: 30px;
+  justify-content: center;
+  padding: 0;
+}
+
+.zh-opt__caret {
+  font-size: 9px;
+}
+
+.zh-opt__glyph {
+  font-family: Georgia, 'Times New Roman', serif;
+  font-weight: 600;
+}
+
+.zh-opt__dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #d93025;
+  display: inline-block;
+}
+
+.zh-opt__num {
+  min-width: 22px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--zh-blue);
+}
+
+/* 功能行的下拉菜单 */
+.zh-optmenu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 14px;
+  z-index: 6;
+  min-width: 200px;
+  max-height: 320px;
+  overflow: auto;
+  padding: 6px;
+  background: #fff;
+  border: 1px solid var(--zh-line);
+  border-radius: 8px;
+  box-shadow: 0 10px 28px rgba(25, 27, 31, 0.18);
+}
+
+.zh-optmenu__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  background: none;
+  border-radius: 5px;
+  font-size: 13px;
+  font-family: inherit;
+  color: var(--zh-text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.zh-optmenu__item:hover {
+  background: var(--zh-hover);
+}
+
+.zh-optmenu__item--preview > span:first-child {
+  min-width: 62px;
+  display: inline-flex;
+  align-items: center;
+}
+
+.zh-optmenu__text {
+  font-size: 12px;
+  color: var(--zh-secondary);
+}
+
+.zh-optmenu__item--custom {
+  justify-content: space-between;
+  cursor: pointer;
+}
+
+.zh-optmenu__item--custom input {
+  width: 36px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+}
+
+/* 底部操作 */
+.zh-mathfooter {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--zh-line);
+}
+
+.zh-btn-cancel {
+  width: 80px;
+  justify-content: center;
+}
+
+.zh-btn-confirm {
+  width: 100px;
+}
+
+/* ============ 表格弹窗 ============ */
+.zh-table-form {
+  display: flex;
+  gap: 24px;
+}
+
+.zh-table-form input {
+  width: 200px;
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid #e2e5ea;
+  border-radius: 6px;
+  font-size: 14px;
+  outline: none;
+}
+
+.zh-table-form input:focus {
+  border-color: var(--zh-blue);
+}
+
+.zh-table-form__error {
+  margin-top: 12px;
+  font-size: 13px;
+  color: var(--zh-warn);
+}
+
+/* ============ 链接 / 视频弹窗 ============ */
+.zh-link-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.zh-link-form input {
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid #e2e5ea;
+  border-radius: 6px;
+  font-size: 14px;
+  outline: none;
+}
+
+.zh-link-form input:focus {
+  border-color: var(--zh-blue);
+}
+
+.zh-link-form__hint {
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--zh-placeholder);
+}
+
+/* ============ 帮助弹窗 ============ */
+.zh-help__section {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--zh-text);
+  margin: 6px 0 8px;
+}
+
+.zh-help__grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px 24px;
+}
+
+.zh-help__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--zh-secondary);
+}
+
+.zh-help__row code {
+  flex-shrink: 0;
+  background: var(--zh-hover);
+  border: 1px solid var(--zh-line);
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 12px;
+  color: var(--zh-text);
+}
+
+/* ============ 打印 / 导出 PDF：只留正文 ============ */
+/* 页边距：不写这条的话正文会贴着纸张边缘（另存为 PDF 时尤其明显） */
+@page {
+  margin: 16mm 14mm;
+}
+
+@media print {
+  .zh-toolbar,
+  .zh-statusbar,
+  .zh-outline,
+  .zh-tablemenu,
+  .zh-modal-mask,
+  .math-node__hint {
+    display: none !important;
+  }
+
+  body {
+    background: #fff;
+  }
+
+  .editor-page {
+    padding-bottom: 0;
+  }
+
+  /* 打印时不要撑满视口高度，否则会多出一页空白 */
+  .editor-shell,
+  .editor-card {
+    min-height: 0;
+  }
+
+  /* 打印时去掉文末留白 */
+  .zh-prose {
+    padding-bottom: 0;
+  }
+
+  .editor-card {
+    width: auto;
+    max-width: none;
+    padding: 0;
+  }
+
+  /* 打印时标题也不放太大 */
+  .zh-title {
+    font-size: 20px;
+    padding: 0 0 12px;
+  }
+
+  /* 深色模式下打印也必须回到浅色，否则纸上是一整页黑底 */
+  :root,
+  [data-theme='dark'] {
+    --zh-bg: #ffffff;
+    --zh-card: #ffffff;
+    --zh-line: #ebeced;
+    --zh-text: #191b1f;
+    --zh-secondary: #8491a5;
+    --zh-icon: #373a40;
+    --zh-blue: #1772f6;
+    --zh-hover: #f6f6f6;
+    --zh-blue-soft: #e1f0ff;
+  }
+
+  [data-theme='dark'] body,
+  [data-theme='dark'] .zh-prose,
+  [data-theme='dark'] .zh-prose code,
+  [data-theme='dark'] .zh-prose pre,
+  [data-theme='dark'] .zh-prose th {
+    background: #fff !important;
+    color: #191b1f !important;
+  }
+}
