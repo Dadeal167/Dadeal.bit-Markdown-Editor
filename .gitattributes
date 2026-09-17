@@ -1,0 +1,21 @@
+# 单文件产物必须按字节原样进出仓库
+#
+# 原因：`Dadealbit Markdown 编辑器.html` 是构建产物，它的 sha256 要和
+# GitHub Release 附件、桌面分享版、dist/index.html 完全一致（校验脚本会比对）。
+# 但本机 git 开了 core.autocrlf=true，默认会在检出时把 LF 换成 CRLF，
+# 于是"刚 checkout 出来的文件"和构建产物差了几万个字节的换行，
+# 校验会莫名其妙报"根目录 HTML 与 dist 产物不一致"（实测踩过）。
+# 这里关掉这个文件的换行转换：进出都是构建出来的原始字节。
+Dadealbit*.html -text
+
+# 源码里的 HTML 模板也钉死成 LF。
+#
+# 为什么：构建时 `index.html` 的骨架是**原样**进产物的（CSS/JS 由打包器生成，都是 LF），
+# 所以模板的换行会一字不差地出现在交付物里。本机 core.autocrlf=true，
+# 于是实测到一个很隐蔽的后果：在**全新 clone** 出来的目录里 `pnpm build`，
+# 产物比我们交付的那份大 13 个字节 —— 就是模板里那 13 个换行变成了 CRLF
+# （产物里实测 12 个 CRLF + 1 个 \r\r\n + 1 个孤立 \r，其余 556 个换行都是 LF）。
+# 内容上没区别、应用照跑，但"clone 下来编出来的就是交付的那一份"这句话就不成立了，
+# 而这类"差一点点"的数字最容易在以后被误当成别的问题。
+# 用 `text eol=lf`（而不是 `-text`）：检出永远是 LF，提交时顺手把 CRLF 归一化，diff 也还能看。
+index.html text eol=lf
