@@ -1,0 +1,30 @@
+# 依赖与构建产物
+node_modules
+dist
+*.tsbuildinfo
+
+# 本地验证的临时产物（截图、报告、探测用的登录配置等，绝不入库）
+.probe
+.zhihu-publish-output
+
+# 自己用的那个版本（带鼠标特效）不进仓库——对外只发布纯净版
+Dadealbit Markdown 编辑器-特效版.html
+
+# 内部文档（开发笔记 / 交接单：含特效实现说明与本地排查记录），只留在本地
+NEXT.md
+docs/开发文档.md
+
+# 编辑器 / 系统杂物
+.DS_Store
+Thumbs.db
+*.log
+*.tmp
+
+# 本地排查脚本（抓用户文件、分析导入结果），只留在本地
+scripts/research/
+scripts/check-my-build.mjs
+
+# 用户扔在仓库根目录里、拿来测试导入的 .md 正文
+# （2026-09-26 真发生：`git add -A` 把它一起提交了。它不属于这个项目）
+/*.md
+!README.md

@@ -1,0 +1,279 @@
+/* ==================================================================
+   深色主题
+   只覆盖设计 token + 少数写死的表面色（工具栏 / 弹窗 / 输入框 / 表格 / 代码块…）。
+   切换方式是 <html data-theme="dark">（见 src/editor/theme.ts）。
+   注意：@media print 里会强制回浅色，否则深色模式打印出来是黑底。
+   ================================================================== */
+[data-theme='dark'] {
+  --zh-bg: #16181c;
+  --zh-card: #1e2126;
+  --zh-line: #2c3037;
+  --zh-blue: #4c9aff;
+  --zh-blue-hover: #6cb0ff;
+  --zh-blue-soft: #1b2c45;
+  --zh-text: #e6e8ea;
+  --zh-secondary: #98a2b3;
+  --zh-icon: #c9cdd4;
+  --zh-hover: #272b31;
+  --zh-placeholder: #6b7480;
+  --zh-warn: #e8a33d;
+}
+
+/* 顶部工具栏 */
+[data-theme='dark'] .zh-toolbar,
+[data-theme='dark'] .zh-statusbar {
+  background: var(--zh-card);
+}
+
+[data-theme='dark'] .zh-btn {
+  color: var(--zh-icon);
+}
+
+[data-theme='dark'] .zh-btn:hover {
+  background: var(--zh-hover);
+  color: var(--zh-blue);
+}
+
+[data-theme='dark'] .zh-btn--active {
+  background: var(--zh-blue-soft);
+  color: var(--zh-blue);
+}
+
+[data-theme='dark'] .zh-btn__label {
+  color: inherit;
+}
+
+/* 文档体检提示条：深色下用暗底 + 亮字，别刺眼 */
+[data-theme='dark'] .zh-fixbar {
+  background: #2d2717;
+  border-color: #4a3f22;
+  color: #e8c67a;
+}
+
+[data-theme='dark'] .zh-fixbar--ok {
+  background: #17281a;
+  border-color: #2b4a30;
+  color: #8fd39c;
+}
+
+[data-theme='dark'] .math-node--error {
+  background: rgba(214, 69, 69, 0.16);
+  box-shadow: inset 0 0 0 1px rgba(214, 69, 69, 0.6);
+}
+
+[data-theme='dark'] .math-node--error::after {
+  color: #ff8a8a;
+}
+
+/* 下拉菜单 */
+[data-theme='dark'] .zh-menu,
+[data-theme='dark'] .zh-docmenu,
+[data-theme='dark'] .zh-typomenu,
+[data-theme='dark'] .zh-optmenu {
+  background: #23262c;
+  border-color: var(--zh-line);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+}
+
+[data-theme='dark'] .zh-menu__item,
+[data-theme='dark'] .zh-docmenu__title,
+[data-theme='dark'] .zh-docmenu__open {
+  color: var(--zh-text);
+}
+
+/* 深色下把"太暗的文字颜色"显示成主题文字色（近白）。
+   背景：工具栏「文字颜色」会把 <span style="color:#1f2329"> 写进文档，深色底上就是黑字看不见。
+   .zh-dim-color 是 readableColors.ts 那个 decoration 打上来的类（属于视图层、不写进文档，
+   也不进导出的 HTML）；!important 是为了压过作者那份行内 style。两种嵌套顺序都兜住：
+   decoration 的 span 可能在颜色 span 外面，也可能在里面。 */
+[data-theme='dark'] .zh-prose .zh-dim-color,
+[data-theme='dark'] .zh-prose .zh-dim-color span {
+  color: var(--zh-text) !important;
+}
+
+[data-theme='dark'] .zh-menu__item:hover,
+[data-theme='dark'] .zh-docmenu__open:hover,
+[data-theme='dark'] .zh-typomenu__item:hover {
+  background: var(--zh-hover);
+}
+
+[data-theme='dark'] .zh-symbol,
+[data-theme='dark'] .zh-typomenu__chip,
+[data-theme='dark'] .zh-opt,
+[data-theme='dark'] .zh-mathcat,
+[data-theme='dark'] .zh-sckey,
+[data-theme='dark'] .zh-mathtpl {
+  background: #23262c;
+  border-color: #3a3f47;
+  color: var(--zh-text);
+}
+
+[data-theme='dark'] .zh-symbol:hover,
+[data-theme='dark'] .zh-typomenu__chip:hover,
+[data-theme='dark'] .zh-opt:hover,
+[data-theme='dark'] .zh-mathcat:hover {
+  background: #2b2f36;
+  border-color: var(--zh-blue);
+}
+
+/* 弹窗 */
+[data-theme='dark'] .zh-modal {
+  background: var(--zh-card);
+  border-color: var(--zh-line);
+}
+
+/* 搜索框：它以前写死了 `background: var(--zh-panel, #fff)`，
+   而深色主题没定义 --zh-panel，于是**回退成白色** —— 深色下就是一块白板。
+   这套体检是被"深色模式下底色实测"脚本抓出来的（见 .probe/audit-dark-theme.mjs）。 */
+[data-theme='dark'] .zh-search {
+  background: var(--zh-card);
+  border-color: var(--zh-line);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+}
+
+[data-theme='dark'] .zh-modal-mask {
+  background: rgba(0, 0, 0, 0.6);
+}
+
+/* 一批"白底 + 浅灰边框"的次要按钮 / 小浮层。
+   全是 index.css 里写死 `background: #fff` 的，深色主题漏了它们 —— 实测在深色下
+   就是一块白（公式弹窗的「取消」、字体面板的「清除颜色」「＋安装字体」、
+   文档菜单的「＋新建」、反馈弹窗的「关闭」、公式补全下拉）。
+   统一按深色控件的规矩来：暗底 + 亮字 + 稍亮的边框。 */
+[data-theme='dark'] .zh-btn-plain,
+[data-theme='dark'] .zh-typomenu__clear,
+[data-theme='dark'] .zh-typomenu__install,
+[data-theme='dark'] .zh-docmenu__new,
+[data-theme='dark'] .zh-mathmode__btn,
+[data-theme='dark'] .zh-autocomplete {
+  background: #23262c;
+  border-color: #3a3f47;
+  color: var(--zh-text);
+}
+
+[data-theme='dark'] .zh-btn-plain:hover,
+[data-theme='dark'] .zh-typomenu__clear:hover,
+[data-theme='dark'] .zh-typomenu__install:hover,
+[data-theme='dark'] .zh-docmenu__new:hover,
+[data-theme='dark'] .zh-mathmode__btn:hover {
+  background: #2b2f36;
+  border-color: var(--zh-blue);
+}
+
+/* 这两个本来是"描边 + 主题蓝字"，深色下把字提亮一点更清楚 */
+[data-theme='dark'] .zh-typomenu__install,
+[data-theme='dark'] .zh-docmenu__new {
+  color: var(--zh-blue);
+}
+
+/* 公式补全下拉：它是个浮层，得跟菜单一样的暗底 + 阴影 */
+[data-theme='dark'] .zh-autocomplete {
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+}
+
+[data-theme='dark'] .zh-mathpanel {
+  background: #23262c;
+  border-color: var(--zh-line);
+}
+
+[data-theme='dark'] .zh-mathsource,
+[data-theme='dark'] .zh-modal input,
+[data-theme='dark'] .zh-modal textarea,
+[data-theme='dark'] .zh-table-form input,
+[data-theme='dark'] .zh-link-form input {
+  background: #1a1d21;
+  border-color: #3a3f47;
+  color: var(--zh-text);
+}
+
+[data-theme='dark'] .zh-mathpane--preview .zh-formula__preview {
+  background: #1a1d21;
+  border-color: var(--zh-line);
+}
+
+[data-theme='dark'] .zh-mathoptions {
+  background: #1a1d21;
+}
+
+[data-theme='dark'] .zh-help__row code,
+[data-theme='dark'] .zh-schint b {
+  color: var(--zh-blue);
+}
+
+[data-theme='dark'] .zh-help__row code {
+  background: #23262c;
+}
+
+/* 正文排版 */
+[data-theme='dark'] .zh-prose code {
+  background: #23262c;
+}
+
+[data-theme='dark'] .zh-prose pre {
+  background: #1a1d21;
+  border-color: var(--zh-line);
+}
+
+[data-theme='dark'] .zh-prose blockquote {
+  color: var(--zh-secondary);
+  border-left-color: #3a3f47;
+}
+
+[data-theme='dark'] .zh-prose th,
+[data-theme='dark'] .zh-prose td {
+  border-color: #3a3f47;
+}
+
+[data-theme='dark'] .zh-prose th {
+  background: #23262c;
+}
+
+[data-theme='dark'] .zh-prose hr {
+  border-top-color: var(--zh-line);
+}
+
+[data-theme='dark'] .zh-prose .selectedCell:after {
+  background: rgba(76, 154, 255, 0.18);
+}
+
+[data-theme='dark'] .math-node:hover,
+[data-theme='dark'] .video-node:hover {
+  background: var(--zh-hover);
+}
+
+/* 表格浮动操作条 */
+[data-theme='dark'] .zh-tablemenu {
+  background: #23262c;
+  border-color: var(--zh-line);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+}
+
+/* 大纲 */
+[data-theme='dark'] .zh-outline {
+  background: var(--zh-card);
+  border-color: var(--zh-line);
+}
+
+/* 状态栏里的开关 */
+[data-theme='dark'] .zh-switch__track {
+  background: #3a3f47;
+}
+
+[data-theme='dark'] .zh-switch__knob {
+  background: #e6e8ea;
+}
+
+/* 滚动条（Chrome/Edge） */
+[data-theme='dark'] ::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+[data-theme='dark'] ::-webkit-scrollbar-thumb {
+  background: #3a3f47;
+  border-radius: 6px;
+}
+
+[data-theme='dark'] ::-webkit-scrollbar-track {
+  background: transparent;
+}
