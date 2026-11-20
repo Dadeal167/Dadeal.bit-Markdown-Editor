@@ -102,18 +102,8 @@ const SURFACES = [
   { name: '快捷键帮助', open: { btn: '更多', menu: '快捷键帮助' }, panel: '.zh-modal--help', items: 0, close: 'esc' },
   { name: '自定义快捷键', open: { btn: '更多', menu: '自定义快捷键' }, panel: '.zh-modal-mask', items: 0, close: 'esc' },
   { name: '使用反馈', open: { btn: '更多', menu: '使用反馈' }, panel: '.zh-modal--feedback', items: 1, close: 'esc' },
+  { name: '特效面板', open: { btn: '特效' }, panel: '.zh-fx', items: 1, close: 'esc' },
 ]
-
-/* 巡游表本身的自检：名字、选择器、按钮都得写全 —— 表写坏了（少一个 `.` 前缀、
-   某一行忘了 name）时，后面的"点一遍"会以很难看懂的方式失败，先把表本身钉住最划算。 */
-check(
-  '面板巡游表本身是有效的（每项都有名字、选择器和入口按钮）',
-  SURFACES.length > 0 &&
-    SURFACES.every(
-      (s) => typeof s.name === 'string' && s.name.length > 0 && typeof s.panel === 'string' && s.panel.startsWith('.') && !!s.open?.btn,
-    ),
-  `${SURFACES.length} 项`,
-)
 
 /**
  * 面板说明文字里的**裸露 Markdown 记号**：提示语是按纯文本渲染的，

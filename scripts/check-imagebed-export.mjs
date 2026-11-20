@@ -14,7 +14,7 @@ import { createServer } from 'node:http'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
-const APP = resolve('Dadealbit Markdown 编辑器.html')
+const APP = resolve(process.env.DADEALBIT_TEST_HTML ?? 'Dadealbit Markdown 编辑器.html')
 if (!existsSync(APP)) {
   console.error('先跑 pnpm build')
   process.exit(1)
@@ -113,6 +113,8 @@ const browser = await chromium.launch({ channel: 'msedge', headless: true })
  *  @param opts.expectNoDownload 期望"拦住不给文件"（助手没开又没令牌时就是这样） */
 async function exportWith(port, token, fileName, opts = {}) {
   const page = await browser.newPage({ viewport: { width: 1280, height: 950 }, acceptDownloads: true })
+  await page.addInitScript(() => { window.showOpenFilePicker = undefined })
+  await page.route('https://picx.zhimg.com/v2-real.jpg', route => route.fulfill({ contentType: 'image/png', body: Buffer.from(PNG, 'base64') }))
   const errs = []
   let downloaded = null
   page.on('pageerror', (e) => errs.push(String(e).slice(0, 140)))
@@ -140,7 +142,7 @@ async function exportWith(port, token, fileName, opts = {}) {
   await page.locator('.zh-btn[title="知乎"]').click()
   await page.waitForTimeout(2000)
   const state = await page.evaluate(() => document.querySelector('.zh-zhihu__state')?.textContent ?? '')
-  const exportBtn = page.locator('.zh-zhihu__export button', { hasText: '导出知乎 .md' })
+  const exportBtn = page.locator('.zh-zhihu__export .zh-pill--primary')
 
   if (opts.expectNoDownload) {
     // 期望"拦住不给文件"：点完等一会儿，确认没有 download 事件
@@ -177,7 +179,7 @@ check('文件里不再有内嵌 base64 图片', !/\]\(data:image\//.test(on.md),
 check('没有「导入知乎后手动粘」的提示行（有网址就不需要了）', !/^> 🖼️ /m.test(on.md))
 check('本来就是网址的图片没被动', on.md.includes('https://picx.zhimg.com/v2-real.jpg'))
 check('公式照常转换', on.md.includes('equation?tex=x_1'))
-check('反馈里说明图片已上传图床', /图床/.test(on.note) && /公开网址/.test(on.note), on.note.slice(0, 90))
+check('反馈里说明图片已上传图床', /图床/.test(on.note) && /公开链接|公开网址/.test(on.note), on.note.slice(0, 90))
 check('这种是成功样式（不是警告）', /result--ok/.test(on.noteClass), on.noteClass)
 check('助手在线这轮无页面错误', on.errs.length === 0, on.errs.slice(0, 2).join(' | '))
 
@@ -190,7 +192,7 @@ check('助手离线：图片还在文件里（内嵌 base64）', /\]\(data:image
 check('助手离线：每张没换网址的图上面有一行提示', (off.md.match(/^> 🖼️ /gm) || []).length === 2, `${(off.md.match(/^> 🖼️ /gm) || []).length} 行`)
 check(
   '助手离线：提示里说清"会丢、两条出路、推荐草稿箱"',
-  /没换成公开网址/.test(off.note) && /开始使用\.bat/.test(off.note) && /图床设置/.test(off.note) && /存到草稿箱/.test(off.note),
+  /缺少公开链接|没换成公开网址/.test(off.note) && /开始使用\.bat/.test(off.note) && /图床设置/.test(off.note) && /存到草稿箱/.test(off.note),
   off.note.slice(0, 140).replace(/\n/g, ' '),
 )
 check('助手离线：反馈是警告样式', /result--bad/.test(off.noteClass), off.noteClass)
@@ -199,6 +201,8 @@ check('助手离线这轮无页面错误', off.errs.length === 0, off.errs.slice
 /* ---------- 3. 不开助手：编辑器用 GitHub 令牌自己上传（接口用假响应拦下来） ---------- */
 async function exportWithToken({ fileName, mockOk, transientPutFails = 0, assistantPort = 5198 }) {
   const page = await browser.newPage({ viewport: { width: 1280, height: 950 }, acceptDownloads: true })
+  await page.addInitScript(() => { window.showOpenFilePicker = undefined })
+  await page.route('https://picx.zhimg.com/v2-real.jpg', route => route.fulfill({ contentType: 'image/png', body: Buffer.from(PNG, 'base64') }))
   const errs = []
   const calls = []
   let putFailsLeft = transientPutFails
@@ -263,7 +267,7 @@ async function exportWithToken({ fileName, mockOk, transientPutFails = 0, assist
     downloaded = d.suggestedFilename()
   })
   const wantDownload = page.waitForEvent('download', { timeout: 20000 }).catch(() => null)
-  await page.locator('.zh-zhihu__export button', { hasText: '导出知乎 .md' }).click()
+  await page.locator('.zh-zhihu__export .zh-pill--primary').click()
   const download = await wantDownload
   const saved = resolve(DL, fileName)
   if (download) await download.saveAs(saved)

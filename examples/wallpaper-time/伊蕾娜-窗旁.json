@@ -1,0 +1,13 @@
+{
+  "texture": "窗边的伊蕾娜 昼夜变化",
+  "match": {
+    "bytes": 106587015,
+    "sha256": "a3231976559759fbf6ad0ef0a21724e1c3bd1341bd186b473ced0bc5a2d290e2"
+  },
+  "periods": [
+    { "at": "04:00", "start": 0.75, "end": 13.75, "entryStart": 72.75, "entryEnd": 79.25 },
+    { "at": "09:00", "start": 18, "end": 35, "entryStart": 14.25 },
+    { "at": "17:00", "start": 42, "end": 52.25, "entryStart": 35.5 },
+    { "at": "20:00", "start": 60.125, "end": 70.375, "entryStart": 54.75 }
+  ]
+}

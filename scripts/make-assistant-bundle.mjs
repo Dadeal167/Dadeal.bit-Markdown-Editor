@@ -1,10 +1,6 @@
 /**
  * 打出「知乎助手包」：给 GitHub Release 下载用的一份**开箱即用**压缩包。
  *
- * 为什么单独一个脚本：自用交付包里带的编辑器是**特效版**（含鼠标特效和那枚从游戏里提取的指针素材），
- * 那些东西不能发布。所以这里复用同一套装配流程（助手 + 便携 Node + 启动器），
- * 只把里面的编辑器换成**分享版那个纯净 HTML**（对外发布的那份）。
- *
  * 产出：`.probe/release/Dadealbit-Zhihu-Assistant-v<版本>.zip`
  *
  * ⚠️ 资产名必须**纯 ASCII**：GitHub 会把 Release 资产名里的中文抹掉
@@ -12,7 +8,7 @@
  * 所以文件名用英文，中文说明放在包内的「使用说明.txt」和 Release 描述里。
  *
  * 内容：
- *   Dadealbit Markdown 编辑器.html    ← 分享版（纯净，无特效、无游戏素材）
+ *   Dadealbit Markdown 编辑器.html    ← 当前发布的编辑器
  *   开始使用.bat / 停止助手.bat / 安装助手自启 / 取消助手自启
  *   启动知乎助手.bat（手动那条老路，窗口里会打印令牌）
  *   assistant/zhihu-assistant.mjs + assistant/node_modules/playwright-core
@@ -23,7 +19,8 @@
  */
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync, readdirSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
-import { resolve } from 'node:path'
+import { createRequire } from 'node:module'
+import { dirname, resolve } from 'node:path'
 import { bundleNodeRuntime, writeLauncherFiles } from './make-launcher.mjs'
 
 const ROOT = resolve(import.meta.dirname, '..')
@@ -34,30 +31,22 @@ const OUT_DIR = resolve(ROOT, '.probe', 'release')
 const STAGE = resolve(OUT_DIR, '知乎助手包')
 const ZIP = resolve(OUT_DIR, `Dadealbit-Zhihu-Assistant-${VERSION}.zip`)
 
-const PURE_HTML = resolve(ROOT, 'Dadealbit Markdown 编辑器.html')
+const EDITOR_HTML = resolve(ROOT, 'Dadealbit Markdown 编辑器.html')
 const ASSIST = resolve(ROOT, 'scripts', 'zhihu-assistant.mjs')
-const PW_CORE = resolve(ROOT, 'node_modules', 'playwright-core')
+const PW_CORE = dirname(createRequire(import.meta.url).resolve('playwright-core/package.json'))
 
-/* ---------- 0. 前置检查：产物必须在、且里面不能有特效/游戏素材 ---------- */
-if (!existsSync(PURE_HTML)) {
+/* ---------- 0. 检查发布产物 ---------- */
+if (!existsSync(EDITOR_HTML)) {
   console.error('先跑 pnpm build（缺 Dadealbit Markdown 编辑器.html）')
   process.exit(1)
-}
-{
-  const html = readFileSync(PURE_HTML, 'utf-8')
-  const leaked = ['sparkCanvas', 'fx-cursor', 'zh-fx__', 'md-editor-mouse-effect', '特效'].filter((m) => html.includes(m))
-  if (leaked.length) {
-    console.error(`这份 HTML 里带着自用版才该有的东西：${leaked.join('、')} —— 不能发布，先跑 pnpm build:pure`)
-    process.exit(1)
-  }
 }
 
 /* ---------- 1. 清空暂存目录，重新装配 ---------- */
 rmSync(STAGE, { recursive: true, force: true })
 mkdirSync(STAGE, { recursive: true })
 
-// 编辑器：分享版（纯净）
-cpSync(PURE_HTML, resolve(STAGE, 'Dadealbit Markdown 编辑器.html'))
+cpSync(EDITOR_HTML, resolve(STAGE, 'Dadealbit Markdown 编辑器.html'))
+cpSync(resolve(ROOT, 'LICENSE'), resolve(STAGE, 'LICENSE'))
 
 // 手动那条老路：双击它，窗口里会打印令牌
 const ASSIST_BAT = `@echo off
@@ -105,6 +94,7 @@ writeFileSync(resolve(STAGE, '启动器', '启动知乎助手.bat'), ASSIST_BAT.
 const asstDir = resolve(STAGE, 'assistant')
 mkdirSync(resolve(asstDir, 'node_modules'), { recursive: true })
 cpSync(ASSIST, resolve(asstDir, 'zhihu-assistant.mjs'))
+cpSync(resolve(ROOT, 'scripts', 'imageFormat.mjs'), resolve(asstDir, 'imageFormat.mjs'))
 cpSync(PW_CORE, resolve(asstDir, 'node_modules', 'playwright-core'), { recursive: true, dereference: true })
 writeFileSync(
   resolve(asstDir, 'package.json'),
@@ -124,7 +114,7 @@ bundleNodeRuntime(STAGE)
 const README = `Dadealbit Markdown 编辑器 · 知乎助手包 ${VERSION}
 ================================================
 
-这个包 = 编辑器（分享版） + 「存到知乎草稿箱」要用的本机助手。
+这个包 = 编辑器 + 「存到知乎草稿箱」要用的本机助手。
 已经带了便携版 Node（runtime\\node.exe），所以**不用自己装 Node.js**。
 
 【怎么用】
@@ -177,11 +167,11 @@ console.log(`装配完成：${stats.files} 个文件，${(stats.bytes / 1048576)
 
 rmSync(ZIP, { force: true })
 const zip = spawnSync(
-  'powershell',
-  ['-NoProfile', '-Command', `Compress-Archive -Path '${STAGE}\\*' -DestinationPath '${ZIP}' -Force`],
-  { encoding: 'utf-8' },
+  'powershell.exe',
+  ['-NoProfile', '-Command', 'Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop; [IO.Compression.ZipFile]::CreateFromDirectory($env:DADEALBIT_ZIP_SOURCE, $env:DADEALBIT_ZIP_OUTPUT, [IO.Compression.CompressionLevel]::Optimal, $false, [Text.Encoding]::UTF8)'],
+  { encoding: 'utf-8', env: { ...process.env, DADEALBIT_ZIP_SOURCE: STAGE, DADEALBIT_ZIP_OUTPUT: ZIP } },
 )
-if (!existsSync(ZIP)) {
+if (zip.status !== 0 || !existsSync(ZIP)) {
   console.error('打包失败：', zip.stdout ?? '', zip.stderr ?? '')
   process.exit(1)
 }

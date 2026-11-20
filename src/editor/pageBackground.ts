@@ -13,7 +13,7 @@
  *
  * 2. **字色自动跟着纸走**：纸上如果是深色（用户用取色器挑了个深蓝），
  *    正文得用浅色字，否则就是深底黑字、看不见。判据用 WCAG 的相对亮度
- *    （阈值 0.42）。用户自己**给某段文字设的颜色**不受影响
+ *    （以黑白文字对比度相等为分界）。用户自己**给某段文字设的颜色**会保存在文档中
  *    （那是 TextColor mark，深色模式下另有一层可读性修补，见 readableColors.ts）。
  *
  * 3. **存 localStorage 的一个新键**：不动已有的键（改了键 = 用户已有的设置全丢，
@@ -43,8 +43,8 @@ export const PAGE_BG_PRESETS: { label: string; value: string }[] = [
 export const DEFAULT_PAGE_BACKGROUND: PageBackground = { color: '' }
 
 /** 浅纸上的字色 / 深纸上的字色（和主题里的正文色是同一档观感） */
-export const INK_ON_LIGHT = '#191b1f'
-export const INK_ON_DARK = '#e8eaed'
+export const INK_ON_LIGHT = '#0b0c0e'
+export const INK_ON_DARK = '#ffffff'
 
 const HEX = /^#[0-9a-fA-F]{6}$/
 
@@ -64,21 +64,23 @@ export function relativeLuminance(hex: string): number {
   const r = parseInt(hex.slice(1, 3), 16)
   const g = parseInt(hex.slice(3, 5), 16)
   const b = parseInt(hex.slice(5, 7), 16)
+  return rgbLuminance([r, g, b])
+}
+
+export function rgbLuminance([r, g, b]: readonly number[]): number {
   return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
 }
 
-/**
- * 这张纸算不算"深色"（要用浅色字）。
- * 阈值 0.42：0.42 以下连深灰都算进去了；上面 8 个预设的亮度都在 0.85 以上，
- * 所以正常情况下永远不会误判（只有用户自己挑深色才会触发）。
- */
+export const PAPER_CONTRAST_MIDPOINT = Math.sqrt(0.05 * 1.05) - 0.05
+
 export function isDarkPaper(hex: string): boolean {
-  return relativeLuminance(hex) < 0.42
+  return relativeLuminance(hex) < PAPER_CONTRAST_MIDPOINT
 }
 
 /** 正文在这张纸上该用什么字色 */
 export function inkFor(hex: string): string {
-  return isDarkPaper(hex) ? INK_ON_DARK : INK_ON_LIGHT
+  if (isDarkPaper(hex)) return INK_ON_DARK
+  return relativeLuminance(hex) < 0.25 ? '#000000' : INK_ON_LIGHT
 }
 
 export function loadPageBackground(): PageBackground {
@@ -111,11 +113,19 @@ export function savePageBackground(bg: PageBackground): void {
  */
 export function applyPageBackground(bg: PageBackground, root: HTMLElement = document.documentElement): void {
   if (isHexColor(bg.color)) {
+    const dark = isDarkPaper(bg.color)
+    const extreme = relativeLuminance(bg.color)
+    root.dataset.paperTone = dark ? 'dark' : 'light'
     root.style.setProperty('--doc-bg', bg.color)
     root.style.setProperty('--doc-ink', inkFor(bg.color))
+    root.style.setProperty('--doc-muted', extreme < 0.10 ? '#e0e0e0' : extreme > 0.45 ? '#494949' : inkFor(bg.color))
+    root.style.setProperty('--doc-block', dark ? 'var(--doc-block-dark)' : 'var(--doc-block-light)')
   } else {
+    delete root.dataset.paperTone
     root.style.removeProperty('--doc-bg')
     root.style.removeProperty('--doc-ink')
+    root.style.removeProperty('--doc-muted')
+    root.style.removeProperty('--doc-block')
   }
 }
 

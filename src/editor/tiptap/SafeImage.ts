@@ -1,5 +1,6 @@
 import { mergeAttributes } from '@tiptap/core'
 import { Image } from '@tiptap/extension-image'
+import { decodeObjectCaption, figureMarker, objectId } from './objectMarkup'
 
 /**
  * 图片对齐：怎么写进 Markdown（**这是这套做法的关键，别随手改**）
@@ -25,6 +26,23 @@ import { Image } from '@tiptap/extension-image'
  */
 const ALIGN_CENTER = '=c'
 const ALIGN_RIGHT = '=r'
+const LOCAL_ASSET = /^\[dadealbit-asset:([^\]\s]+)\](?: )?/
+
+function readImageTitle(value: string | null) {
+  let title = value ?? ''
+  let source = ''
+  const marker = LOCAL_ASSET.exec(title)
+  if (marker) {
+    try {
+      source = decodeURIComponent(marker[1])
+      title = title.slice(marker[0].length)
+    } catch { /* 保留原有标题 */ }
+  }
+  const figure = __BUILD_MODE__ === 'effect' ? figureMarker.exec(title) : null
+  const id = objectId(figure?.[1], 'fig')
+  if (!figure || !id) return { source, title, id: '', caption: undefined }
+  return { source, title: title.slice(figure[0].length), id, caption: decodeObjectCaption(figure[2]) }
+}
 
 export type ImageAlign = 'left' | 'center' | 'right'
 
@@ -68,6 +86,10 @@ function alignStyle(align: ImageAlign): string | null {
   return null
 }
 
+function imageElement(el: HTMLElement): HTMLElement {
+  return el.tagName === 'FIGURE' ? el.querySelector(':scope > img') ?? el : el
+}
+
 /**
  * 图片节点：修两个实测踩到的坑（别改回去）
  *
@@ -84,22 +106,46 @@ function alignStyle(align: ImageAlign): string | null {
  *    就算以后有别的路径塞进来非字符串属性（粘贴、脚本、旧文档），也不会再让存盘炸掉。
  */
 export const SafeImage = Image.extend({
+  parseHTML() {
+    const image = this.parent?.() ?? []
+    if (__BUILD_MODE__ !== 'effect') return image
+    return [{
+      tag: 'figure.zh-figure',
+      getAttrs: (el) => {
+        const img = imageElement(el)
+        const src = img.getAttribute('src')
+        if (!src || (!this.options.allowBase64 && src.startsWith('data:'))) return false
+        return { src, width: img.getAttribute('width'), height: img.getAttribute('height') }
+      },
+    }, ...image]
+  },
   addAttributes() {
     return {
       ...this.parent?.(),
-      alt: { default: null, parseHTML: (el: HTMLElement) => el.getAttribute('alt') },
+      alt: { default: null, parseHTML: (el: HTMLElement) => imageElement(el).getAttribute('alt') },
       /* title 里可能藏着对齐/说明哨兵：解析时就拆干净，节点里存的是**真实标题** */
       title: {
         default: null,
-        parseHTML: (el: HTMLElement) => decodeImageTitle(el.getAttribute('title')).title || null,
+        parseHTML: (el: HTMLElement) => decodeImageTitle(readImageTitle(imageElement(el).getAttribute('title')).title).title || null,
       },
+      localAsset: {
+        default: '',
+        rendered: false,
+        parseHTML: (el: HTMLElement) => readImageTitle(imageElement(el).getAttribute('title')).source,
+      },
+      ...(__BUILD_MODE__ === 'effect' ? { objectId: {
+        default: '',
+        rendered: false,
+        parseHTML: (el: HTMLElement) => objectId(el.closest('figure')?.getAttribute('data-dadealbit-object'), 'fig') ||
+          readImageTitle(imageElement(el).getAttribute('title')).id,
+      } } : {}),
       align: {
         default: 'left' as ImageAlign,
         /* 两条来源都要认：`data-align`（我们导出的 HTML 再粘回来）和 title 哨兵（Markdown 存盘） */
         parseHTML: (el: HTMLElement) => {
-          const raw = el.getAttribute('data-align')
+          const raw = el.getAttribute('data-align') ?? el.closest('figure')?.getAttribute('data-align')
           if (raw === 'center' || raw === 'right' || raw === 'left') return raw as ImageAlign
-          return decodeImageTitle(el.getAttribute('title')).align
+          return decodeImageTitle(readImageTitle(imageElement(el).getAttribute('title')).title).align
         },
         /* 左对齐（默认）**什么属性都不加** —— 保证老文档、老导出逐字节不变 */
         renderHTML: (attrs: Record<string, unknown>) => {
@@ -118,9 +164,14 @@ export const SafeImage = Image.extend({
         default: '',
         parseHTML: (el: HTMLElement) => {
           /* 我们导出的 HTML 是 <figure><img><figcaption>说明</figcaption></figure> */
-          const fromFigure = el.querySelector?.('figcaption')?.textContent
+          const stored = readImageTitle(imageElement(el).getAttribute('title'))
+          const figure = el.closest('figure')
+          if (__BUILD_MODE__ === 'effect' && figure?.hasAttribute('data-dadealbit-object')) {
+            return figure.getAttribute('data-caption') ?? ''
+          }
+          const fromFigure = figure?.querySelector('figcaption')?.textContent
           if (fromFigure != null) return fromFigure.trim()
-          return decodeImageTitle(el.getAttribute('title')).caption
+          return stored.caption ?? decodeImageTitle(stored.title).caption
         },
       },
     }
@@ -135,18 +186,24 @@ export const SafeImage = Image.extend({
    */
   renderHTML({ node, HTMLAttributes }) {
     const caption = String((node.attrs as Record<string, unknown>).caption ?? '').trim()
+    const id = objectId(node.attrs.objectId, 'fig')
     const attrs = { ...(HTMLAttributes as Record<string, unknown>) }
-    if (!caption) return ['img', mergeAttributes(this.options.HTMLAttributes, attrs)]
+    delete attrs.caption
+    if (!caption && !id) return ['img', mergeAttributes(this.options.HTMLAttributes, attrs)]
     /* 对齐样式挪到 figure 上：说明跟着图一起居中/靠右，而不是各对各的 */
     const { style, 'data-align': dataAlign, ...imgAttrs } = attrs
     const figAttrs: Record<string, unknown> = { class: 'zh-figure' }
+    if (id) {
+      figAttrs['data-dadealbit-object'] = id
+      figAttrs['data-caption'] = caption
+    }
     if (dataAlign) figAttrs['data-align'] = dataAlign
     if (style) figAttrs.style = style
     return [
       'figure',
       figAttrs,
       ['img', mergeAttributes(this.options.HTMLAttributes, imgAttrs)],
-      ['figcaption', { class: 'zh-caption' }, caption],
+      ['figcaption', { class: id ? 'zh-caption zh-object-caption' : 'zh-caption' }, caption],
     ]
   },
 
@@ -171,9 +228,16 @@ export const SafeImage = Image.extend({
           const title = node.attrs.title == null ? '' : String(node.attrs.title)
           const caption = node.attrs.caption == null ? '' : String(node.attrs.caption)
           /* 对齐 + 说明都写进 title 槽位（左对齐又没有说明 = 不写，见文件顶部说明） */
-          const outTitle = encodeImageTitle((node.attrs.align ?? 'left') as ImageAlign, title, caption)
+          const properties = encodeImageTitle((node.attrs.align ?? 'left') as ImageAlign, title, caption)
+          const source = String(node.attrs.localAsset ?? '')
+          const marker = source ? `[dadealbit-asset:${encodeURIComponent(source)}]` : ''
+          const id = objectId(node.attrs.objectId, 'fig')
+          const figure = id ? `[dadealbit-figure:${id}:${encodeURIComponent(caption)}]` : ''
+          const alignment = id ? encodeImageTitle((node.attrs.align ?? 'left') as ImageAlign, title) : properties
+          const outTitle = [marker, figure, alignment].filter(Boolean).join(' ')
+          const escapedTitle = outTitle.replace(/["\\]/g, '\\$&')
           state.write(
-            `![${state.esc(alt)}](${src.replace(/[()]/g, '\\$&')}${outTitle ? ` "${outTitle.replace(/"/g, '\\"')}"` : ''})`,
+            `![${state.esc(alt)}](${src.replace(/[()]/g, '\\$&')}${escapedTitle ? ` "${escapedTitle}"` : ''})`,
           )
           // 块级图片后面必须空一行，否则会被粘到下一个块上。
           // 实测（用户文件）：图片后面紧跟的引用会变成 `![](图)> 引用…`，

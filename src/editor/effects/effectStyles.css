@@ -1,0 +1,550 @@
+/**
+ * 鼠标点击特效 + 特效设置面板的样式。
+ *
+ * 为什么单独放一个文件（而不是写在 index.css 里）：纯净版构建用 Vite alias 把
+ * `./EffectPanel` 换成 `EffectPanel.pure.tsx`（空壳）、把特效实现换成 .pure 版本 ——
+ * 只有样式**跟着被换掉的那个模块 import**，才不会漏进纯净版产物。
+ * 实测过：写在 index.css 里时，纯净版的 HTML 里仍然能搜到 `.zh-fx__*` 这些类名（检查脚本抓到的）。
+ *
+ * 画布样式（#sparkCanvas）不在这里：由 src/editor/effects/mouseSpark.ts 在启用时自己注入。
+ */
+
+/* ============ 鼠标点击特效 ============
+   画布样式（#sparkCanvas）由 src/editor/effects/mouseSpark.ts 在启用时自己注入 ——
+   这样纯净版构建里不会残留任何相关 CSS */
+
+/* ============ 特效设置面板 ============ */
+/* 固定在窗口右侧停靠：按钮在工具栏里的位置会变（窗口宽度、按钮增减），
+   用 absolute + right:0 会以按钮为基准，按钮靠左时整个面板会跑到屏幕外（实测 x=-163） */
+.zh-fx {
+  position: fixed;
+  top: 54px;
+  right: 12px;
+  box-sizing: border-box;
+  width: min(350px, calc(100vw - 24px));
+  max-height: calc(100vh - 120px);
+  overflow-y: auto;
+  background: var(--zh-card);
+  color: var(--zh-text);
+  border: 1px solid var(--zh-line);
+  border-radius: 8px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.12);
+  padding: 14px;
+  z-index: 60;
+  text-align: left;
+}
+
+.zh-fx__pages {
+  position: sticky;
+  top: -14px;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+  margin-bottom: 12px;
+  padding: 4px;
+  border-radius: 8px;
+  background: var(--zh-hover);
+}
+
+.zh-fx__pages button {
+  padding: 6px 10px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--zh-secondary);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.zh-fx__pages button[aria-pressed='true'] {
+  border-color: var(--zh-line);
+  background: var(--zh-card);
+  color: var(--zh-text);
+  font-weight: 600;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .zh-fx__pages button { transition: background-color .14s ease, color .14s ease, border-color .14s ease; }
+  .zh-fx__page:not([hidden]) { animation: zh-fx-page-in .16s ease-out; }
+  @keyframes zh-fx-page-in {
+    from { opacity: 0; translate: 0 3px; }
+    to { opacity: 1; }
+  }
+}
+
+.zh-fx__head-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.zh-fx__title {
+  color: var(--zh-text);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.zh-fx__reset {
+  border: 1px solid var(--zh-line);
+  border-radius: 6px;
+  background: var(--zh-card);
+  color: var(--zh-text);
+  font-family: inherit;
+  font-size: 12px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.zh-fx__reset:hover {
+  border-color: var(--zh-blue);
+}
+
+.zh-fx__tip {
+  font-size: 11px;
+  color: var(--zh-secondary);
+  margin-bottom: 10px;
+}
+
+.zh-fx__modes {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+
+.zh-fx__mode {
+  flex: 1;
+  border: 1px solid var(--zh-line);
+  border-radius: 6px;
+  background: var(--zh-card);
+  color: var(--zh-text);
+  font-family: inherit;
+  font-size: 12px;
+  padding: 5px 4px;
+  cursor: pointer;
+}
+
+.zh-fx__mode--on {
+  border-color: var(--zh-blue);
+  color: var(--zh-text);
+  background: var(--zh-blue-soft);
+}
+
+.zh-fx__row {
+  margin-bottom: 14px;
+}
+
+.zh-fx__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.zh-fx__label {
+  font-size: 13px;
+  color: var(--zh-text);
+}
+
+.zh-fx__value {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--zh-blue);
+}
+
+.zh-fx__value input {
+  width: 52px;
+  border: none;
+  border-bottom: 1px dashed #d7dbe2;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: right;
+  outline: none;
+  padding: 0 2px;
+}
+
+.zh-fx__value input:focus {
+  border-bottom-color: var(--zh-blue);
+}
+
+.zh-fx__value em {
+  font-style: normal;
+  color: var(--zh-secondary);
+  font-weight: 400;
+}
+
+.zh-fx__range {
+  width: 100%;
+  accent-color: var(--zh-blue);
+}
+
+.zh-fx__hint {
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--zh-secondary);
+  margin-top: 4px;
+}
+
+.zh-fx__toggle {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin-bottom: 14px;
+}
+
+.zh-fx__switch {
+  position: relative;
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
+.zh-fx__switch input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.zh-fx__slider {
+  display: block;
+  width: 40px;
+  height: 22px;
+  border-radius: 22px;
+  background: #cfd6e0;
+  transition: background 0.15s;
+}
+
+.zh-fx__slider::after {
+  content: '';
+  display: block;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  margin: 2px;
+  transition: transform 0.15s;
+}
+
+.zh-fx__switch input:checked + .zh-fx__slider {
+  background: var(--zh-blue);
+}
+
+.zh-fx__switch input:checked + .zh-fx__slider::after {
+  transform: translateX(18px);
+}
+
+.zh-fx__color {
+  border-top: 1px solid var(--zh-line);
+  padding-top: 12px;
+}
+
+.zh-fx__color-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap; /* 颜色/按钮/色值放不下时换行，而不是挤成两行小字 */
+  gap: 10px;
+  margin: 8px 0;
+}
+
+.zh-fx__swatch {
+  width: 46px;
+  height: 30px;
+  border-radius: 6px;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.1);
+}
+
+.zh-fx__pick {
+  border: 1px solid var(--zh-blue);
+  border-radius: 6px;
+  background: var(--zh-card);
+  color: var(--zh-text);
+  font-family: inherit;
+  font-size: 12px;
+  padding: 5px 12px;
+  cursor: pointer;
+  white-space: nowrap; /* 按钮文字不要断成两行 */
+}
+
+.zh-fx input[type='color'] {
+  position: absolute;
+  left: -9999px;
+  width: 1px;
+  height: 1px;
+}
+
+.zh-fx__presets {
+  display: flex;
+  gap: 6px;
+}
+
+.zh-fx__preset {
+  width: 26px;
+  height: 22px;
+  border-radius: 5px;
+  border: 1px solid transparent;
+  cursor: pointer;
+}
+
+.zh-fx__preset--on {
+  border-color: var(--zh-text);
+  box-shadow: 0 0 0 2px #fff inset;
+}
+
+/* 颜色区：说明文字、色值、我的颜色、第二个颜色（渐变） */
+.zh-fx__label-hint {
+  margin-left: 8px;
+  font-weight: 400;
+  font-size: 11px;
+  color: var(--zh-secondary);
+}
+
+.zh-fx__hex {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 11px;
+  letter-spacing: 0.4px;
+  color: var(--zh-secondary);
+  text-transform: uppercase;
+}
+
+.zh-fx__mine {
+  margin: 10px 0 4px;
+}
+
+.zh-fx__mine-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 6px;
+  font-size: 12px;
+  color: var(--zh-text);
+}
+
+.zh-fx__mine .zh-fx__presets {
+  flex-wrap: wrap;
+}
+
+.zh-fx__color-row--second {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--zh-line);
+}
+
+.zh-fx__swatch--empty {
+  background: repeating-linear-gradient(45deg, #e8ebef 0 6px, #f6f8fa 6px 12px);
+}
+
+/* ============ 面板内的取色器（不依赖系统调色板） ============ */
+.zh-cf {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 8px 0;
+  flex-wrap: wrap;
+}
+
+.zh-cf__label {
+  width: 100%;
+  font-size: 12px;
+  color: var(--zh-secondary);
+}
+
+.zh-cf__preview {
+  width: 46px;
+  height: 30px;
+  flex: none;
+  border-radius: 6px;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.12);
+}
+
+.zh-cf__bars {
+  flex: 1 1 150px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* 三条滑杆各自带渐变底，一眼看出拖到哪是什么颜色 */
+.zh-cf__bar {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 10px;
+  border-radius: 5px;
+  outline: none;
+  cursor: pointer;
+}
+
+.zh-cf__bar::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  border: 2px solid var(--zh-blue);
+  cursor: pointer;
+}
+
+.zh-cf__bar--hue {
+  background: linear-gradient(
+    to right,
+    #ff0000 0%,
+    #ffff00 17%,
+    #00ff00 33%,
+    #00ffff 50%,
+    #0000ff 67%,
+    #ff00ff 83%,
+    #ff0000 100%
+  );
+}
+
+.zh-cf__bar--sat {
+  background: linear-gradient(to right, #d9dbe0, #1772f6);
+}
+
+.zh-cf__bar--light {
+  background: linear-gradient(to right, #101216, #8b9099, #ffffff);
+}
+
+.zh-cf__hex {
+  width: 92px;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 12px;
+  padding: 5px 8px;
+  border: 1px solid var(--zh-line);
+  border-radius: 6px;
+  background: var(--zh-card);
+  color: var(--zh-text);
+  text-transform: uppercase;
+}
+
+.zh-cf__hex:focus {
+  border-color: var(--zh-blue);
+  outline: none;
+}
+
+/* ============ 自定义鼠标指针（**只在自用版**） ============
+   箭头朝右，热点（"点哪儿"）由 JS 写进 `--fx-cursor`，这里只负责用它 ——
+   做成变量是因为这枚箭头的尖是**钝的**，"瞄准点"在不同人/不同 DPI 下会差几个像素，
+   面板里可以随时微调（下面有校准区的样式）。
+   用户要求：**整页都用它**，写字区（正文编辑区、标题、各种输入框）也保持这枚箭头，
+   所以挂在 html / body 上靠继承生效，不覆盖任何元素 ——
+   只有按钮那种"自己写了 cursor: pointer"的还是手型（点得准，也更符合习惯）。
+   图片由 Vite 内联成 base64（单文件构建），纯净版不会引用这份 CSS，所以一行都不会进产物。 */
+html[data-fx-cursor='1'],
+html[data-fx-cursor='1'] body {
+  cursor: var(--fx-cursor, auto);
+}
+
+/* 表单控件默认会走浏览器自己的光标（I 形），这里显式让它继承这枚箭头 */
+html[data-fx-cursor='1'] input,
+html[data-fx-cursor='1'] textarea,
+html[data-fx-cursor='1'] [contenteditable='true'],
+html[data-fx-cursor='1'] .ProseMirror {
+  cursor: inherit;
+}
+
+/* ---------- 面板里的「指针位置」一行：X/Y 加减 + 校准区 ---------- */
+.zh-fx__cursor-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.zh-fx__nudge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--zh-hover);
+  border: 1px solid var(--zh-line);
+  border-radius: 6px;
+  padding: 2px 4px;
+}
+
+.zh-fx__nudge b {
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--zh-secondary);
+  padding: 0 2px;
+}
+
+.zh-fx__nudge button {
+  width: 20px;
+  height: 20px;
+  line-height: 1;
+  border: 1px solid var(--zh-line);
+  border-radius: 4px;
+  background: var(--zh-card);
+  color: var(--zh-text);
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.zh-fx__nudge button:hover {
+  border-color: var(--zh-blue);
+  color: var(--zh-blue);
+}
+
+.zh-fx__nudge span {
+  min-width: 22px;
+  text-align: center;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 12px;
+}
+
+/* 校准区：点一下就在"真实点到的位置"落一个红叉，拿它跟箭头尖端对一对 */
+.zh-fx__calib {
+  position: relative;
+  height: 58px;
+  margin-top: 6px;
+  border: 1px dashed var(--zh-line);
+  border-radius: 6px;
+  background: repeating-linear-gradient(45deg, #fbfcfe, #fbfcfe 6px, #f4f6fa 6px, #f4f6fa 12px);
+}
+
+.zh-fx__calib-hint {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11.5px;
+  color: var(--zh-secondary);
+  pointer-events: none;
+}
+
+.zh-fx__calib-dot {
+  position: absolute;
+  width: 13px;
+  height: 13px;
+  margin: -7px 0 0 -7px;
+  pointer-events: none;
+}
+
+.zh-fx__calib-dot::before,
+.zh-fx__calib-dot::after {
+  content: '';
+  position: absolute;
+  background: #e5484d;
+}
+
+.zh-fx__calib-dot::before {
+  left: 6px;
+  top: 0;
+  width: 1.5px;
+  height: 13px;
+}
+
+.zh-fx__calib-dot::after {
+  top: 6px;
+  left: 0;
+  width: 13px;
+  height: 1.5px;
+}

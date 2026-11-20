@@ -18,9 +18,9 @@ import { makeAnimatedGif } from './make-test-gif.mjs'
  * **本套件的断言总数** —— 文档里的数量占位符读的就是这个常量（见 check:docs-counts）。
  * 改测试条数时改这里；文档不用动（占位符会跟着变）。
  */
-export const TEST_COUNT = 15
+export const TEST_COUNT = 16
 
-const APP = resolve('Dadealbit Markdown 编辑器.html')
+const APP = resolve(process.env.DADEALBIT_TEST_HTML ?? 'Dadealbit Markdown 编辑器.html')
 if (!existsSync(APP)) {
   console.error('先跑 pnpm build')
   process.exit(1)
@@ -95,6 +95,12 @@ const afterImport = await page.evaluate(() => {
 check('导入后 3 张图片都打不开（相对路径）', afterImport.imgs === 3 && afterImport.broken === 3, `${afterImport.broken}/${afterImport.imgs} 裂图`)
 check('自动浮出提示条', afterImport.bar && /图片打不开/.test(afterImport.barText), afterImport.barText.slice(0, 40))
 check('提示条上有「选导出文件夹修复」按钮', afterImport.repairBtn)
+
+await page.getByTitle('先不管', { exact: true }).click()
+await page.locator('.zh-btn[title="更多"]').click()
+await page.getByRole('button', { name: '检查图片与公式（自动修复公式）' }).click()
+check('从菜单重新检查后立即可选择原图片恢复',
+  await page.getByTitle('修复图片：选导出文件夹', { exact: true }).isVisible())
 
 /* ---------- 2. 点修复 → 选导出文件夹 → 图片应当全部嵌进来 ---------- */
 const [dirChooser] = await Promise.all([

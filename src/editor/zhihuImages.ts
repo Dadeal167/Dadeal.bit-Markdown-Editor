@@ -63,8 +63,7 @@ export function zhihuImageStats(html: string): ZhihuImageStats {
 export function localImageBlockText(stats: ZhihuImageStats): string {
   const names = stats.localNames.length ? `（${stats.localNames.join('、')}${stats.local > stats.localNames.length ? ' 等' : ''}）` : ''
   return (
-    `这篇里有 ${stats.local} 张图片还是本地路径${names}，知乎读不到你电脑上的文件 —— ` +
-    `直接传过去，草稿里只会出现「图片导入失败，请重新上传」。` +
-    `先点下面的「选图片文件夹修复」把它们嵌进文档（选那个装着 assets 的文件夹），修好再传。`
+    `${stats.local} 张图片仍使用本地路径${names}。这些图片在知乎导入时会出现「图片导入失败」。` +
+    `请使用「选图片文件夹修复」导入图片后再保存草稿。`
   )
 }

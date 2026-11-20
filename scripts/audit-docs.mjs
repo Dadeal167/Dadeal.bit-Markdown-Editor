@@ -1,15 +1,18 @@
 /**
  * 多文档管理体检：新建 / 切换 / 删除 / 旧草稿迁移 / 刷新保持 / 打开文件成新文档
- * 前提：pnpm dev 已运行
+ * 默认跑开发服务器，也可通过 DADEALBIT_TEST_HTML 指定离线构建产物。
  */
 import { chromium } from 'playwright-core'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { tmpdir } from 'node:os'
+import { pathToFileURL } from 'node:url'
 
 const OUT = resolve('.probe')
 mkdirSync(OUT, { recursive: true })
-const BASE = 'http://127.0.0.1:5173/'
+const BASE = process.env.DADEALBIT_TEST_HTML
+  ? pathToFileURL(resolve(process.env.DADEALBIT_TEST_HTML)).href
+  : 'http://127.0.0.1:5173/'
 const DOCS_KEY = 'md-editor-docs-v1'
 const LEGACY_KEY = 'md-editor-draft-v1'
 
@@ -154,17 +157,25 @@ record(
 
 /* ---------- 7. 删除文档 ---------- */
 await openMenu()
-const countBeforeDel = (await store()).docs.length
+const beforeDel = await store()
+const target = beforeDel.docs.find((doc) => doc.id !== beforeDel.currentId)
+const countBeforeDel = beforeDel.docs.length
 page.once('dialog', (d) => d.accept())
 await page.locator('.zh-docmenu__item', { hasText: 'multi-doc-import' }).locator('.zh-docmenu__del').click()
 await page.waitForTimeout(800)
 const afterDel = await store()
 record(
   '删除文档：数量 -1 并自动切到别的文档',
-  afterDel.docs.length === countBeforeDel - 1 && afterDel.docs.some((d) => d.id === afterDel.currentId),
+  afterDel.docs.length === countBeforeDel - 1 && afterDel.currentId === target.id &&
+    afterDel.docs.every((doc) => doc.id !== beforeDel.currentId),
   `${countBeforeDel} → ${afterDel.docs.length} 篇`,
 )
-record('删除后编辑器内容跟着换', (await md()).length > 0)
+const matchesTarget = async () =>
+  (await page.locator('.zh-title').inputValue()) === target.title && (await md()).trim() === target.md.trim()
+record('删除后加载了目标文档的标题和正文', await matchesTarget())
+await page.reload({ waitUntil: 'load', timeout: 60000 })
+await ready()
+record('刷新后仍是目标文档，旧正文没有被写进去', await matchesTarget())
 
 /* ---------- 8. 只剩一篇时不允许再删（全程走 UI，不直接改存储） ---------- */
 let guard = 0

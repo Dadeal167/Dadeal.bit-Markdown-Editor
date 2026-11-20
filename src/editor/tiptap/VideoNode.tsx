@@ -83,10 +83,31 @@ export function toEmbedUrl(input: string): { src: string; kind: 'bilibili' | 'yo
   return r.ok ? { src: r.src, kind: r.kind } : null
 }
 
+/** 播放器被平台拒绝或断网时，仍能从文档打开视频原页。 */
+export function videoPageUrl(src: string): string | null {
+  try {
+    const url = new URL(normalizeEmbedSrc(src))
+    if (url.hostname === 'player.bilibili.com') {
+      const bv = url.searchParams.get('bvid')
+      const av = url.searchParams.get('aid')
+      if (bv && /^BV[0-9A-Za-z]{10}$/.test(bv)) return `https://www.bilibili.com/video/${bv}`
+      if (av && /^\d+$/.test(av)) return `https://www.bilibili.com/video/av${av}`
+    }
+    if (url.hostname === 'www.youtube.com') {
+      const match = /^\/embed\/([\w-]{11})$/.exec(url.pathname)
+      if (match) return `https://www.youtube.com/watch?v=${match[1]}`
+    }
+  } catch {
+    // 老文档可能没有有效地址。
+  }
+  return null
+}
+
 function VideoView({ node, selected }: NodeViewProps) {
   // 老文档里可能存着 `//player...`（甚至 file://player...），显示前统一补成 https
   const src = normalizeEmbedSrc(String(node.attrs.src ?? ''))
   const kind = String(node.attrs.kind ?? '')
+  const pageUrl = videoPageUrl(src)
   return (
     <NodeViewWrapper
       as="div"
@@ -97,7 +118,10 @@ function VideoView({ node, selected }: NodeViewProps) {
       <div className="video-node__frame" contentEditable={false}>
         <iframe src={src} allowFullScreen title="嵌入视频" loading="lazy" />
       </div>
-      <div className="video-node__caption">{kind === 'bilibili' ? 'B 站视频' : 'YouTube 视频'}</div>
+      <div className="video-node__caption" contentEditable={false}>
+        <span>{kind === 'bilibili' ? 'B 站视频' : 'YouTube 视频'}</span>
+        {pageUrl && <a href={pageUrl} target="_blank" rel="noopener noreferrer" onClick={(event) => event.stopPropagation()}>在网页打开视频</a>}
+      </div>
     </NodeViewWrapper>
   )
 }

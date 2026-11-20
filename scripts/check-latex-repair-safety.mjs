@@ -21,7 +21,7 @@ import { resolve } from 'node:path'
 
 const APP = resolve('Dadealbit Markdown 编辑器.html')
 if (!existsSync(APP)) {
-  console.error('先跑 pnpm build:pure')
+  console.error('先跑 pnpm build')
   process.exit(1)
 }
 const OUT = resolve('.probe', 'out')

@@ -1,11 +1,14 @@
 import { Node, mergeAttributes } from '@tiptap/core'
 import { NodeViewWrapper, ReactNodeViewRenderer } from '@tiptap/react'
 import type { NodeViewProps } from '@tiptap/react'
-import { useLayoutEffect, useRef } from 'react'
+import { useCallback, useLayoutEffect, useMemo, useRef, useSyncExternalStore, type KeyboardEvent, type MouseEvent } from 'react'
+import { editorEquations, gotoEquation, screenEquation } from '../math/equationIndex'
+import { equationMarkup, standaloneEquationReference, substituteEquationReferences } from '../math/equationSyntax'
 import { TextSelection } from '@tiptap/pm/state'
 import { requestMathEdit } from '../mathEvents'
 import { injectMathIntoDom, MATH_BLOCK_MARK, MATH_INLINE_MARK } from './mathMarkdown'
 import { repairLatex, rendersOk } from '../math/latexRepair'
+import { documentMacros, EMPTY_MACROS, katexMacroOptions, type MathMacros } from '../math/documentMacros'
 import katex from 'katex'
 
 /**
@@ -97,31 +100,46 @@ function useFitToColumn(bodyRef: React.RefObject<HTMLSpanElement | null>, deps: 
 }
 
 /** KaTeX 渲染（失败时退化为空，由占位提示兜底） */
-export function renderKatex(latex: string, display: boolean): string {
+export function renderKatex(latex: string, display: boolean, macros: MathMacros = EMPTY_MACROS): string {
   if (!latex.trim()) return ''
   try {
-    return katex.renderToString(latex, { throwOnError: false, displayMode: display })
+    const preview = latex.includes('\\') ? substituteEquationReferences(equationMarkup(latex).core) : latex
+    return katex.renderToString(preview, { throwOnError: false, displayMode: display, ...katexMacroOptions(macros) })
   } catch {
     return ''
   }
 }
 
 function MathView(props: NodeViewProps) {
-  const { node, getPos, selected } = props
+  const { node, getPos, selected, editor } = props
   const latex = String(node.attrs.latex ?? '')
   const display = node.type.name === 'mathBlock'
   // 源文件里反斜杠写重/写漏的公式（\left \\{ 之类）按修好的写法渲染，
   // 用户点开编辑时看到的也是修好的那份，确认一次就存下来了
-  const shown = repairLatex(latex, display)
-  const html = renderKatex(shown, display)
+  const ref = standaloneEquationReference(latex)
+  const tracksNumbers = display || /\\(?:eqref|ref)\s*\{/.test(latex)
+  const tracksMacros = __BUILD_MODE__ === 'effect' && latex.includes('\\')
+  const subscribe = useCallback((refresh: () => void) => {
+    if (!tracksNumbers && !tracksMacros) return () => {}
+    editor.on('transaction', refresh)
+    return () => { editor.off('transaction', refresh) }
+  }, [editor, tracksNumbers, tracksMacros])
+  const macros = useSyncExternalStore(subscribe, () => tracksMacros ? documentMacros(editor.state.doc).macros : EMPTY_MACROS)
+  const shown = repairLatex(latex, display, macros)
+  const rendered = useSyncExternalStore(subscribe, () => tracksNumbers
+    ? screenEquation(editor, getPos(), shown) : shown)
+  const html = useMemo(() => renderKatex(rendered, display, macros), [rendered, display, macros])
   const empty = !latex.trim()
   // 注意：不能用 html.includes('katex-error') 判断——KaTeX 遇到"不认识的命令"
   // （\boguscmd 这种）会**悄悄**渲染成普通文字，不给任何错误标记（实测）。
   // 所以用 throwOnError:true 的渲染检测当准绳，和"文档体检"的口径保持一致。
-  const broken = !empty && !rendersOk(shown, display)
+  const broken = !empty && !rendersOk(shown, display, macros)
   const bodyRef = useRef<HTMLSpanElement | null>(null)
   /* 渲染内容变了、行内/行间换了，都要重量一次 */
   useFitToColumn(bodyRef, [html, display])
+
+  const target = ref ? editorEquations(editor).byLabel.get(ref.label) : undefined
+  const linked = Boolean(target?.number)
 
   const open = () => {
     // ⚠️ getPos() 在 NodeView 已经脱离文档时会返回 undefined（不是 null）：
@@ -146,8 +164,25 @@ function MathView(props: NodeViewProps) {
         .join(' ')}
       data-latex={latex}
       data-math-broken={broken ? 'true' : undefined}
-      title={broken ? '这个公式没能渲染出来（多半是源文件里的写法有问题），点击可以修改' : '点击修改公式'}
-      onClick={open}
+      data-equation-reference={ref?.label}
+      data-equation-unresolved={ref && !linked ? 'true' : undefined}
+      role={linked ? 'link' : undefined}
+      tabIndex={linked ? 0 : undefined}
+      title={linked ? '跳转到引用的公式。Alt+点击可编辑引用。'
+        : ref ? '找不到唯一且有编号的公式。点击修改引用。'
+          : broken ? '公式无法渲染。请选择公式进行编辑。' : '点击修改公式'}
+      onClick={(event: MouseEvent<HTMLElement>) => {
+        const current = ref && editorEquations(editor).byLabel.get(ref.label)
+        if (current?.number && !event.altKey) gotoEquation(editor, current.pos)
+        else open()
+      }}
+      onKeyDown={(event: KeyboardEvent<HTMLElement>) => {
+        const current = ref && editorEquations(editor).byLabel.get(ref.label)
+        if (current?.number && event.key === 'Enter') {
+          event.preventDefault()
+          gotoEquation(editor, current.pos)
+        }
+      }}
     >
       {empty ? (
         <span className="math-node__placeholder">{display ? '点击输入公式' : '公式'}</span>
@@ -169,7 +204,7 @@ const mathAttrs = {
        repairLatex 对本来就能渲染的公式原样返回，所以在这里调不会误改。 */
     parseHTML: (el: HTMLElement) => {
       const raw = el.getAttribute('data-latex') ?? ''
-      if (!raw) return raw
+      if (!raw || el.hasAttribute('data-math-checked')) return raw
       const display = el.hasAttribute('data-math-block') || el.getAttribute('data-math-block') === 'true'
       return repairLatex(raw, display)
     },

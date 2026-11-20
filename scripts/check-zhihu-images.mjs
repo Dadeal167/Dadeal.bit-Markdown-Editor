@@ -29,7 +29,7 @@ const check = (name, ok, detail = '') => {
   console.log(`${ok ? '✅' : '❌'}  ${name}${detail ? '  — ' + detail : ''}`)
 }
 
-const APP = resolve('Dadealbit Markdown 编辑器.html')
+const APP = resolve(process.env.DADEALBIT_TEST_HTML ?? 'Dadealbit Markdown 编辑器.html')
 if (!existsSync(APP)) {
   console.error('先跑 pnpm build')
   process.exit(1)
@@ -60,6 +60,7 @@ const DATA_PNG =
 
 const browser = await chromium.launch({ channel: 'msedge', headless: true })
 const page = await browser.newPage({ viewport: { width: 1300, height: 1000 } })
+await page.addInitScript(() => { window.showOpenFilePicker = undefined })
 const errors = []
 page.on('pageerror', (e) => errors.push(String(e).slice(0, 120)))
 
@@ -146,15 +147,19 @@ check(
    （助手这时候根本没在跑；如果守卫没生效，用户看到的会是连接失败，照样把稿子发出去） */
 await page.locator('.zh-modal--zhihu .zh-modal__footer .zh-btn-solid').click()
 await page.waitForTimeout(1500)
-const blocked = await page.evaluate(() => {
-  const el = document.querySelector('.zh-modal--zhihu .zh-zhihu__result--bad')
-  return { text: el?.textContent?.replace(/\s+/g, ' ').trim() ?? '' }
-})
-check(
-  '点「存到草稿箱」被拦住，且说明是本地图片（不是"助手连不上"）',
-  /本地路径/.test(blocked.text) && /没有动你知乎上的草稿|图片导入失败/.test(blocked.text) && !/连不上|Failed to fetch|助手/.test(blocked.text.replace(/助手已连接|没检测到助手/g, '')),
-  blocked.text.slice(0, 80),
-)
+const review = page.getByRole('dialog', { name: '导出前检查' })
+if (await review.isVisible()) {
+  const blocked = await review.innerText()
+  check(
+    '预检定位本地图片，并阻止写入知乎草稿',
+    /图片未嵌入/.test(blocked) && await review.getByRole('button', { name: '继续保存草稿' }).isDisabled(),
+    blocked.slice(0, 80),
+  )
+  await review.getByRole('button', { name: '返回知乎面板' }).click()
+} else {
+  const blocked = await page.locator('.zh-modal--zhihu .zh-zhihu__result--bad').innerText()
+  check('本地图片阻止写入知乎草稿', /本地路径.*图片导入失败/s.test(blocked), blocked.slice(0, 80))
+}
 
 /* 图片嵌好之后（data:），警告要消失 —— 否则用户永远修不完 */
 await closePanel()

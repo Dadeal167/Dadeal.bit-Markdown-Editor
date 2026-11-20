@@ -2,8 +2,9 @@
  * 工具栏全按钮体检：逐个点击并校验效果，输出每个按钮的真实结果
  */
 import { chromium } from 'playwright-core'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
 
 const OUT = resolve('.probe')
 mkdirSync(OUT, { recursive: true })
@@ -36,7 +37,8 @@ page.on('console', (m) => {
 page.on('pageerror', (e) => errors.push('pageerror: ' + e.message))
 page.on('dialog', async (d) => {
   dialogs.push(d.message())
-  await d.dismiss()
+  if (d.type() === 'confirm' && d.message().includes('换回示例内容')) await d.accept()
+  else await d.dismiss()
 })
 
 const md = () => page.evaluate(() => window.__MD__?.() ?? '')
@@ -58,7 +60,8 @@ const caretToEnd = async () => {
   await page.waitForTimeout(150)
 }
 
-await page.goto('http://127.0.0.1:5173/', { waitUntil: 'load', timeout: 60000 })
+const app = process.env.DADEALBIT_TEST_HTML ? pathToFileURL(resolve(process.env.DADEALBIT_TEST_HTML)).href : 'http://127.0.0.1:5173/'
+await page.goto(app, { waitUntil: 'load', timeout: 60000 })
 await page.waitForSelector('.ProseMirror', { timeout: 30000 })
 await page.waitForTimeout(1500)
 
@@ -86,8 +89,8 @@ const toolbarAudit = await page.evaluate(() => {
   }
 })
 record(
-  '工具栏渲染（23 个按钮，均有图标+文字；带特效的本地版 24 个）',
-  (toolbarAudit.count === 23 || toolbarAudit.count === 24) &&
+  '工具栏渲染（各按钮均有图标和文字）',
+  (toolbarAudit.count === 24 || toolbarAudit.count === 25) &&
     toolbarAudit.emptyLabel === 0 &&
     toolbarAudit.emptyIcon === 0,
   `${toolbarAudit.count} 个：${toolbarAudit.labels.replace(/\n/g, ' ')}`,
@@ -115,8 +118,18 @@ now = await md()
 record('标题 → 一级标题', /^#\s.*H1测试/m.test(now), (now.match(/^#.*$/m)?.[0] ?? '未找到'))
 
 await caretToEnd()
+await page.evaluate(() => {
+  const editor = window.__EDITOR__
+  let from = 0
+  editor.state.doc.descendants((node, position) => {
+    if (node.isText && node.marks.some(mark => mark.type.name === 'bold') && node.text.includes('B')) {
+      from = position + node.text.indexOf('B')
+    }
+  })
+  if (from) editor.commands.setTextSelection({ from, to: from + 1 })
+})
 await click('清除格式')
-record('清除格式（不报错）', true, '已点击，无异常')
+record('清除格式：清除选中文字的加粗', !(await md()).includes('**B**'))
 
 // 2. 块级
 await caretToEnd()
@@ -124,7 +137,7 @@ await page.keyboard.press('Enter')
 await page.keyboard.type('引用测试')
 await click('引用')
 now = await md()
-record('引用', /^>\s*引用测试/m.test(now) || now.includes('引用测试'), now.slice(-30).replace(/\n/g, '\\n'))
+record('引用', /^>.*引用测试/m.test(now), now.slice(-30).replace(/\n/g, '\\n'))
 
 await caretToEnd()
 await page.keyboard.press('Enter')
@@ -137,7 +150,7 @@ await page.keyboard.press('Enter')
 await page.keyboard.type('code测试')
 await click('代码块')
 now = await md()
-record('代码块', now.includes('```') || now.includes('code测试'), '尾部: ' + now.slice(-24).replace(/\n/g, '\\n'))
+record('代码块', /```[^\n]*\n[\s\S]*?code测试[\s\S]*?\n```/.test(now), '尾部: ' + now.slice(-24).replace(/\n/g, '\\n'))
 
 await caretToEnd()
 await page.keyboard.press('Enter')
@@ -162,14 +175,16 @@ const [save] = await Promise.all([
   page.waitForEvent('download', { timeout: 6000 }),
   click('保存').then(() => page.locator('.zh-menu__item[data-format="plain"]').click()),
 ])
-record('保存 → 存一份自己看的 .md（备份）', save.suggestedFilename().endsWith('.md'), save.suggestedFilename())
+const savedMarkdown = readFileSync(await save.path(), 'utf8')
+record('保存 → 存一份自己看的 .md（备份）', save.suggestedFilename().endsWith('.md') && savedMarkdown.includes('无序项'), save.suggestedFilename())
 
 await click('保存')
 const [html] = await Promise.all([
   page.waitForEvent('download', { timeout: 8000 }),
   page.locator('.zh-menu__item[data-format="html"]').click(),
 ])
-record('保存 → HTML 网页', html.suggestedFilename().endsWith('.html'), html.suggestedFilename())
+const savedHtml = readFileSync(await html.path(), 'utf8')
+record('保存 → HTML 网页', html.suggestedFilename().endsWith('.html') && savedHtml.includes('无序项') && savedHtml.includes('<!'), html.suggestedFilename())
 
 await click('保存')
 await page.locator('.zh-menu__item[data-format="pdf"]').click()
@@ -319,7 +334,7 @@ await page.waitForTimeout(700)
 const resetMd = await md()
 record(
   '更多 → 重置当前文档为示例内容',
-  resetMd.includes('欢迎使用') && (await page.locator('.zh-title').inputValue()) === '',
+  resetMd.includes('欢迎使用') && !resetMd.includes('测试链接') && (await page.locator('.zh-title').inputValue()) === '',
   `md 头部="${resetMd.slice(0, 12).replace(/\n/g, '⏎')}"`,
 )
 
@@ -340,3 +355,4 @@ const failed = results.filter((r) => !r.ok)
 console.log(`\n${results.length - failed.length}/${results.length} 正常`)
 if (failed.length) console.log('异常项：\n' + failed.map((f) => ` - ${f.name}：${f.detail}`).join('\n'))
 await browser.close()
+if (failed.length) process.exitCode = 1

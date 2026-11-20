@@ -94,7 +94,8 @@ check(
 await page.evaluate(() => window.__EDITOR__.commands.clearContent())
 await page.waitForTimeout(300)
 await page.evaluate(() => window.__EDITOR__.commands.focus('end'))
-await page.locator('.zh-btn[title="表格"]').click()
+await page.getByTitle('插入', { exact: true }).click()
+await page.getByRole('button', { name: '表格', exact: true }).click()
 await page.waitForSelector('.zh-modal--table', { timeout: 4000 })
 await page.waitForTimeout(400)
 await page.keyboard.type('3')
@@ -273,7 +274,8 @@ const storeReads = await page.evaluate(() => {
 check('打字时不再反复读整个文档库', storeReads === 0, `3 次输入触发 ${storeReads} 次读取`)
 
 /* ⑥ 无障碍：弹窗有 dialog 语义 */
-await page.locator('.zh-btn[title="表格"]').click()
+await page.getByTitle('插入', { exact: true }).click()
+await page.getByRole('button', { name: '表格', exact: true }).click()
 await page.waitForSelector('.zh-modal--table', { timeout: 4000 })
 const role = await page.evaluate(() => {
   const el = document.querySelector('.zh-modal--table')

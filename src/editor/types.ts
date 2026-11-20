@@ -1,6 +1,9 @@
 import type { Editor } from '@tiptap/core'
 
 declare global {
+  /** 构建期常量：纯净版（不含鼠标特效）构建时为 true —— 见 vite.config.ts 的 define */
+  const __NO_MOUSE_EFFECT__: boolean
+  const __SPINE_ENABLED__: boolean
   /** 构建期常量：这次构建的时间 —— 诊断包里带上，用来确认用户跑的是哪一版 */
   const __BUILD_TIME__: string
   /** 构建期常量：'pure' 或 'effect' */

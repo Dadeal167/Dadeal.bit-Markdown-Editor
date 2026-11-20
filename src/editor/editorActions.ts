@@ -1,8 +1,8 @@
-import type { Editor } from '@tiptap/core'
+import { getHTMLFromFragment, type Editor } from '@tiptap/core'
 import type { Node as PMNode } from '@tiptap/pm/model'
 import { NodeSelection } from '@tiptap/pm/state'
 import katex from 'katex'
-import { explainVideoInput, toEmbedUrl } from './tiptap/VideoNode'
+import { explainVideoInput, toEmbedUrl, videoPageUrl } from './tiptap/VideoNode'
 import { escapeTablePipes } from './tiptap/tableMarkdown'
 import {
   codeMask,
@@ -13,10 +13,19 @@ import {
   stripLeakedMarks,
 } from './tiptap/mathMarkdown'
 import { repairLatex, rendersOk } from './math/latexRepair'
+import { documentMacros, EMPTY_MACROS, katexMacroOptions, markdownMacros, MACRO_LANGUAGE, type MathMacros } from './math/documentMacros'
+import { editorEquations, equationNumberText, exportEquation } from './math/equationIndex'
+import { equationLabels } from './math/equationSyntax'
+import { projectObjectHtml } from './publication/exportObjects'
+import { projectScholarHtml } from './publication/exportScholar'
+import { expandDocumentMacros } from './math/expandDocumentMacros'
+import { addDocumentContents } from './workspace/documentContents'
 import { escapeMarkdownDestinations } from './tiptap/mdDestinations'
 import { convertRawMath, countRawMath, escapeNonMathDollars, looksLikeLatex } from './math/rawMathText'
 import { looksLikeFormula, stripExporterHeader } from './zhihuMarkdown'
 import type { Typography } from './typography'
+import { sniffImage } from '../../scripts/imageFormat.mjs'
+import { editionDocument, hasEditionBlocks } from './publication/editions'
 
 /** 正文里"还是原文的 $…$ 公式"：体检数量与一键转换（实现见 math/rawMathText.ts） */
 export { convertRawMath, countRawMath }
@@ -34,22 +43,25 @@ function collapseNodeSelection(editor: Editor): void {
 }
 
 /* ============ 取 Markdown 源码 ============ */
-export function getMarkdown(editor: Editor): string {
-  const storage = editor.storage as unknown as { markdown?: { getMarkdown?: () => string } }
-  const raw = storage.markdown?.getMarkdown?.() ?? ''
+export function getMarkdown(editor: Editor, doc = editor.state.doc): string {
+  const storage = editor.storage as unknown as {
+    markdown?: { serializer?: { serialize(document: typeof doc): string } }
+  }
+  const raw = storage.markdown?.serializer?.serialize(doc) ?? ''
   // 1) 表格单元格里的竖线必须转义，否则存盘再打开会把表格切坏
   // 2) 公式标记换回 $…$，其余字面 $ 转义成 \$（否则"原价 $100，现价 $60"会被当成公式）
   // 3) 存之前把"渲染不出来"的公式按修好的写法写出去 —— 否则界面上显示是好的、
   //    存下来还是坏写法，拿别的软件打开就是 Invalid Mathematical Formula（实测用户踩到过）
-  return finalizeMarkdown(escapeTablePipes(editor, repairMathInMarkdown(raw)))
+  return finalizeMarkdown(escapeTablePipes(editor, repairMathInMarkdown(raw, documentMacros(doc).macros), doc))
 }
 
-export function setMarkdown(editor: Editor, md: string): { fixedMath: number } {
+export function setMarkdown(editor: Editor, md: string, retainImportedImages = false): { fixedMath: number } {
   // 0) 先救"被内部标记污染过的存档"：以前的版本会把未收尾的序列化结果
   //    （公式定界符还是 U+0002/U+0003）自动保存进存储 —— 崩溃后重开，正文里
   //    全是"豆腐块" □、公式退化成纯文本。守卫把成对标记还原成 $…$（公式不丢）、
   //    孤立控制字符删掉，正常文档原样返回（开头就 return，不花钱）。
   md = stripLeakedMarks(md, 'setMarkdown 载入')
+  const macros = markdownMacros(md)
   // 顺序很重要：
   //   1) 一趟扫出公式：\$（公式外面）保护成占位符、$…$ / $$…$$ 整段换成占位符
   //      —— 否则 Markdown 解析器会先吃掉公式里的 * _ ` [ \\ 等记号
@@ -58,11 +70,11 @@ export function setMarkdown(editor: Editor, md: string): { fixedMath: number } {
   //      （例如 `\left \\{ x \right \\}`、结尾多个 `\`），这种在编辑器里就是一行红字
   //   3) 解析完由 injectMathIntoDom 把占位符还原成数学节点
   const { md: protectedMd, spans } = protectMathSpans(
-    recoverEscapedMath(stripExporterHeader(md), looksLikeFormula),
+    recoverEscapedMath(stripExporterHeader(md), looksLikeFormula), macros,
   )
   let fixedMath = 0
   for (const span of spans) {
-    const fixed = repairLatex(span.latex, span.display)
+    const fixed = repairLatex(span.latex, span.display, macros)
     if (fixed !== span.latex) {
       span.latex = fixed
       fixedMath += 1
@@ -73,7 +85,23 @@ export function setMarkdown(editor: Editor, md: string): { fixedMath: number } {
   //      而且因为没建出图片节点，"图片打不开 → 选文件夹修复"的提示也不会出现。
   //      放在公式保护**之后**：公式已经换成占位符，不会误伤公式里的 `](`。
   //      （用户实测：知乎导出的文件夹名带空格 —— 详见 mdDestinations.ts 顶部注释）
+  const embedded = new Map<string, string>()
+  if (retainImportedImages) {
+    editor.state.doc.descendants((node) => {
+      if (node.type.name !== 'image' || !node.attrs.localAsset) return
+      embedded.set(String(node.attrs.localAsset), String(node.attrs.src))
+    })
+  }
   editor.commands.setContent(escapeMarkdownDestinations(protectedMd))
+  if (embedded.size) {
+    const transaction = editor.state.tr
+    for (const image of collectBrokenImages(editor)) {
+      const src = embedded.get(image.src)
+      const node = transaction.doc.nodeAt(image.pos)
+      if (src && node) transaction.setNodeMarkup(image.pos, undefined, { ...node.attrs, src, localAsset: image.src })
+    }
+    if (transaction.docChanged) editor.view.dispatch(transaction.setMeta('addToHistory', false))
+  }
   // 4) 再把**节点里存着的**写法也修一遍：上面那步修的是"解析用的占位符"，
   //    而文档里存的 LaTeX 才是所有导出路径（HTML / PDF / 知乎 / 存盘）用的那份。
   //    以前屏幕上是修好的、导出却还是坏写法，就是这个缺口（用户截图：导出的 HTML 里出现
@@ -99,7 +127,8 @@ function mathNodes(editor: Editor): { pos: number; latex: string; display: boole
  *  （界面上渲染时也是先修再渲染）。否则文件里会出现"图片是红的错误公式、
  *  但 alt 里是修好的原文"这种自相矛盾的结果。 */
 export function listMath(editor: Editor): { latex: string; display: boolean }[] {
-  return mathNodes(editor).map((m) => ({ latex: repairLatex(m.latex, m.display), display: m.display }))
+  const { macros } = documentMacros(editor.state.doc)
+  return mathNodes(editor).map((m) => ({ latex: repairLatex(m.latex, m.display, macros), display: m.display }))
 }
 
 /**
@@ -115,12 +144,13 @@ export function listMath(editor: Editor): { latex: string; display: boolean }[] 
  * （实测：节点里存 `f'(x)&lt;0`，countBrokenMath 报 0，提示条不显示。）
  */
 export function scanMathIssues(editor: Editor): { stored: number; unfixable: number } {
+  const { macros } = documentMacros(editor.state.doc)
   let stored = 0
   let unfixable = 0
   for (const m of mathNodes(editor)) {
     if (!m.latex.trim()) continue
-    if (!rendersOk(m.latex, m.display)) stored += 1
-    if (!rendersOk(repairLatex(m.latex, m.display), m.display)) unfixable += 1
+    if (!rendersOk(m.latex, m.display, macros)) stored += 1
+    if (!rendersOk(repairLatex(m.latex, m.display, macros), m.display, macros)) unfixable += 1
   }
   return { stored, unfixable }
 }
@@ -181,8 +211,9 @@ export function exposeRepairDebugHooks(): void {
 
 /** 把文档里写法有问题的公式逐个修好（用于修早先存下来的旧文档），返回修好的个数 */
 export function repairAllMath(editor: Editor): number {
+  const { macros } = documentMacros(editor.state.doc)
   const targets = mathNodes(editor)
-    .map((m) => ({ ...m, fixed: repairLatex(m.latex, m.display) }))
+    .map((m) => ({ ...m, fixed: repairLatex(m.latex, m.display, macros) }))
     .filter((m) => m.fixed !== m.latex)
   if (!targets.length) return 0
   const { tr } = editor.state
@@ -351,13 +382,13 @@ export function insertVideo(editor: Editor, input: string): boolean {
 /* ============ 公式防呆提示（温和的橙色提醒，绝不报错） ============ */
 export function friendlyMathHint(latex: string): string | null {
   const t = latex.trim()
-  if (!t) return '还没有输入内容，在中间的填空区点一下就能开始写'
-  if (/\\frac\s*\{\s*\}\s*\{/.test(t)) return '分数的分子还是空的，点一下分子位置填上内容'
+  if (!t) return '请输入公式。'
+  if (/\\frac\s*\{\s*\}\s*\{/.test(t)) return '请输入分数的分子。'
   if (/\\frac\s*\{[^{}]*\}\s*\{\s*\}/.test(t)) return '分母还是空的，记得补上分母（分母不能为 0）'
   const open = (t.match(/\{/g) ?? []).length
   const close = (t.match(/\}/g) ?? []).length
-  if (open !== close) return '有一处花括号没配对，检查一下是否成对'
-  if (/[+\-*/]\s*$/.test(t)) return '末尾的运算符后面还没写内容'
+  if (open !== close) return '花括号不匹配。请检查公式。'
+  if (/[+\-*/]\s*$/.test(t)) return '末尾运算符缺少操作数。'
   return null
 }
 
@@ -526,6 +557,18 @@ function countGifFrames(buf: Uint8Array): number {
   }
 }
 
+export function isAnimatedEmbeddedImage(src: string): boolean {
+  const prefix = /^data:image\/(?:gif|a?png|webp);base64,/i.exec(src)
+  if (!prefix) return false
+  try {
+    const decoded = atob(src.slice(prefix[0].length))
+    const bytes = new Uint8Array(decoded.length)
+    for (let i = 0; i < decoded.length; i += 1) bytes[i] = decoded.charCodeAt(i)
+    const format = sniffImage(bytes)
+    return format?.ext === 'gif' ? countGifFrames(bytes) > 1 : Boolean(format?.animated)
+  } catch { return false }
+}
+
 /**
  * 把选中的图片处理成可直接内嵌的 data URL：
  * 小图原样；大图等比缩到长边 1600px；PNG 缩放后仍然偏大就转 JPEG。
@@ -533,23 +576,24 @@ function countGifFrames(buf: Uint8Array): number {
  * ⚠️ **动图一律不碰**（GIF 且不止一帧）—— canvas 重编码会把动画压成一张静止图。
  */
 export async function prepareImageDataUrl(file: File): Promise<string> {
+  const header = new Uint8Array(await file.slice(0, 32).arrayBuffer())
+  let format = sniffImage(header)
+  let bytes: Uint8Array | undefined
+  if (format?.ext === 'gif' || format?.ext === 'png') {
+    bytes = new Uint8Array(await file.arrayBuffer())
+    format = sniffImage(bytes)
+  }
+  const mime = format?.mime ?? file.type
   let original: string
   try {
-    original = await readFileAsDataUrl(file)
+    original = await readFileAsDataUrl(mime !== file.type ? new File([file], file.name, { type: mime }) : file)
   } catch (e) {
     // 把"读不出来"变成一句能看懂的话（FileReader 的原始报错对用户没意义）
     throw new Error(`图片读不出来（${file.name}）`, { cause: e })
   }
   if (file.size <= SMALL_FILE_BYTES) return original
   /* 动图先放行：只有"确实只有 1 帧的 GIF"才允许走下面的压缩 */
-  if (/image\/gif/i.test(file.type) || /\.gif$/i.test(file.name)) {
-    try {
-      const frames = countGifFrames(new Uint8Array(await file.arrayBuffer()))
-      if (frames !== 1) return original
-    } catch {
-      return original
-    }
-  }
+  if (format?.animated || (format?.ext === 'gif' && (!bytes || countGifFrames(bytes) !== 1))) return original
   try {
     const img = await loadImage(original)
     const scale = Math.min(1, IMAGE_MAX_EDGE / Math.max(img.width, img.height))
@@ -561,7 +605,7 @@ export async function prepareImageDataUrl(file: File): Promise<string> {
     const ctx = canvas.getContext('2d')
     if (!ctx) return original
     ctx.drawImage(img, 0, 0, width, height)
-    if (file.type === 'image/png') {
+    if (mime === 'image/png') {
       const png = canvas.toDataURL('image/png')
       if (png.length <= KEEP_PNG_CHARS) return png
     }
@@ -642,9 +686,10 @@ function matchFile(list: File[], src: string): File | null {
  * 把用户选的图片（可以整个文件夹一起选）按文件名配到文档里，替换掉打不开的相对路径。
  * 图片会先压缩再以 data URL 内嵌，这样以后关掉浏览器、换台电脑打开都还在。
  */
-export async function embedImages(editor: Editor, files: File[]): Promise<EmbedResult> {
+export async function embedImages(editor: Editor, files: File[] | ((src: string) => Promise<File | null>),
+  preserveSource = false, isActive: () => boolean = () => true): Promise<EmbedResult> {
   const pool = new Map<string, File[]>()
-  for (const f of files) {
+  for (const f of Array.isArray(files) ? files : []) {
     if (f.type && !f.type.startsWith('image/')) continue
     const key = f.name.toLowerCase()
     const list = pool.get(key)
@@ -654,10 +699,11 @@ export async function embedImages(editor: Editor, files: File[]): Promise<EmbedR
 
   const missing: string[] = []
   const skipped: string[] = []
-  const updates: { pos: number; src: string }[] = []
+  const updates = new Map<string, string>()
 
   for (const broken of collectBrokenImages(editor)) {
-    const file = matchFile(pool.get(broken.name) ?? [], broken.src)
+    if (updates.has(broken.src)) continue
+    const file = Array.isArray(files) ? matchFile(pool.get(broken.name) ?? [], broken.src) : await files(broken.src)
     if (!file) {
       missing.push(broken.name)
       continue
@@ -666,22 +712,26 @@ export async function embedImages(editor: Editor, files: File[]): Promise<EmbedR
       skipped.push(file.name)
       continue
     }
-    updates.push({ pos: broken.pos, src: await prepareImageDataUrl(file) })
+    try { updates.set(broken.src, await prepareImageDataUrl(file)) }
+    catch { skipped.push(file.name) }
   }
 
-  if (updates.length) {
+  let fixed = 0
+  if (updates.size && !editor.isDestroyed && isActive()) {
     // 收集位置在前、改属性在后：setNodeMarkup 只换属性不改文档结构，位置不会漂
     const { tr } = editor.state
-    for (const u of updates) {
-      const node = tr.doc.nodeAt(u.pos)
-      if (node && node.type.name === 'image') {
-        tr.setNodeMarkup(u.pos, undefined, { ...node.attrs, src: u.src })
+    for (const image of collectBrokenImages(editor)) {
+      const embedded = updates.get(image.src)
+      const node = tr.doc.nodeAt(image.pos)
+      if (embedded && node) {
+        tr.setNodeMarkup(image.pos, undefined, { ...node.attrs, src: embedded, localAsset: preserveSource ? image.src : '' })
+        fixed += 1
       }
     }
     editor.view.dispatch(tr)
   }
 
-  return { fixed: updates.length, missing, skipped }
+  return { fixed, missing, skipped }
 }
 
 /** 选文件（可选多选 / 选整个文件夹） */
@@ -706,7 +756,10 @@ export function pickFiles(
 }
 
 export function downloadText(name: string, content: string, type: string): void {
-  const blob = new Blob([content], { type })
+  downloadBlob(name, new Blob([content], { type }))
+}
+
+export function downloadBlob(name: string, blob: Blob): void {
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
@@ -720,10 +773,10 @@ export function downloadText(name: string, content: string, type: string): void 
 }
 
 /** 导出用：把公式渲染成浏览器原生 MathML（不依赖任何 CSS/字体，离线打开也正常显示） */
-export function renderMathml(latex: string, display: boolean): string {
+export function renderMathml(latex: string, display: boolean, macros: MathMacros = EMPTY_MACROS): string {
   if (!latex.trim()) return ''
   try {
-    return katex.renderToString(latex, { throwOnError: false, displayMode: display, output: 'mathml' })
+    return katex.renderToString(latex, { throwOnError: false, displayMode: display, output: 'mathml', ...katexMacroOptions(macros) })
   } catch {
     return `<code>${latex}</code>`
   }
@@ -733,35 +786,100 @@ export function renderMathml(latex: string, display: boolean): string {
  * 把编辑器 HTML 里的公式节点与视频节点替换成导出用的形态：
  * 公式 → MathML；视频 → iframe（NodeView 不会出现在 getHTML 里，只有 data 属性）
  */
-export function buildExportBody(editor: Editor): string {
-  const raw = editor.getHTML()
+export function buildExportBody(editor: Editor, format: 'document' | 'zhihu' = 'document', contentsTitle?: string, source = editor.state.doc): string {
+  const content = __BUILD_MODE__ === 'effect' && hasEditionBlocks(source) ? editionDocument(source, 'teacher') : source
+  const raw = getHTMLFromFragment(content.content, editor.schema)
   const doc = new DOMParser().parseFromString(`<div id="__export_root">${raw}</div>`, 'text/html')
   const root = doc.getElementById('__export_root')
   if (!root) return raw
+  const { macros } = documentMacros(content)
+  if (__BUILD_MODE__ === 'effect') {
+    for (const code of root.querySelectorAll(`pre > code.language-${MACRO_LANGUAGE}`)) code.parentElement?.remove()
+  }
+  if (__BUILD_MODE__ === 'effect') projectObjectHtml(root, content, format === 'zhihu')
+  if (format === 'document' && contentsTitle !== undefined) addDocumentContents(root, content, contentsTitle)
 
   // 导出前先按"修好的写法"渲染：文档里存的 LaTeX 可能是坏写法（例如 `\left { x \right }`
   // 少一个反斜杠）—— 屏幕上显示时会先修再渲染，导出这条路径以前**没修**，
   // 于是导出的 HTML/PDF 里出现 `ParseError: KaTeX parse error …` 红框（用户截图反馈过）。
-  root.querySelectorAll('[data-math-inline]').forEach((el) => {
-    const holder = doc.createElement('span')
-    holder.innerHTML = renderMathml(repairLatex(el.getAttribute('data-latex') ?? '', false), false)
+  const equations = editorEquations(editor, content)
+  root.querySelectorAll('[data-math-inline],[data-math-block]').forEach((el, position) => {
+    const entry = equations.entries[position]
+    if (!entry) return
+    const math = exportEquation(equations, entry)
+    if (math.ref) {
+      const label = equationNumberText(math.target?.number ?? '??', math.ref.parentheses)
+      if (format === 'document' && math.target?.number && !/[\\{}^_]/.test(label)) {
+        const link = doc.createElement('a')
+        link.href = '#equation-' + encodeURIComponent(math.ref.label)
+        link.textContent = label
+        el.replaceWith(link)
+      } else if (format === 'zhihu' || !/[\\{}^_]/.test(label)) {
+        el.replaceWith(doc.createTextNode(label))
+      } else {
+        const holder = doc.createElement('span')
+        holder.innerHTML = renderMathml(math.latex, false, macros)
+        el.replaceWith(holder)
+      }
+      return
+    }
+
+    const latex = repairLatex(math.latex, entry.display, macros)
+    if (format === 'zhihu') {
+      const expanded = expandDocumentMacros(latex, macros)
+      el.setAttribute('data-latex', expanded.latex)
+      el.textContent = expanded.latex
+      if (expanded.unresolved) el.setAttribute('data-zhihu-macro-unresolved', '')
+      if (math.number) {
+        const number = doc.createElement('p')
+        number.textContent = equationNumberText(math.number, math.parentheses)
+        el.after(number)
+      }
+      return
+    }
+    const holder = doc.createElement(entry.display ? 'div' : 'span')
+    if (entry.display) holder.style.margin = '16px 0'
+    holder.innerHTML = renderMathml(latex, entry.display, macros)
+    for (const label of new Set(equationLabels(entry.latex))) {
+      const target = equations.byLabel.get(label)
+      if (target?.pos !== entry.pos || !target.number) continue
+      const anchor = doc.createElement('span')
+      anchor.id = 'equation-' + label
+      holder.prepend(anchor)
+    }
+    if (math.number) {
+      const number = doc.createElement('span')
+      number.className = 'equation-export-number'
+      const label = equationNumberText(math.number, math.parentheses)
+      if (/[\\{}^_]/.test(label)) number.innerHTML = '&ensp;' + renderMathml(label, false, macros)
+      else number.textContent = '\u2002' + label
+      holder.append(number)
+    }
     el.replaceWith(holder)
   })
-  root.querySelectorAll('[data-math-block]').forEach((el) => {
-    const holder = doc.createElement('div')
-    holder.setAttribute('style', 'margin:16px 0')
-    holder.innerHTML = renderMathml(repairLatex(el.getAttribute('data-latex') ?? '', true), true)
-    el.replaceWith(holder)
-  })
+  if (__BUILD_MODE__ === 'effect') projectScholarHtml(root, content, format === 'zhihu')
+  if (format === 'zhihu') return root.innerHTML
   root.querySelectorAll('[data-video-src]').forEach((el) => {
+    const src = el.getAttribute('data-video-src') ?? ''
     const frame = doc.createElement('div')
     frame.setAttribute('style', 'position:relative;width:100%;padding-top:56.25%;margin:16px 0')
     const iframe = doc.createElement('iframe')
-    iframe.setAttribute('src', el.getAttribute('data-video-src') ?? '')
+    iframe.setAttribute('src', src)
+    iframe.setAttribute('title', '嵌入视频')
     iframe.setAttribute('allowfullscreen', 'true')
     iframe.setAttribute('style', 'position:absolute;inset:0;width:100%;height:100%;border:0')
     frame.appendChild(iframe)
-    el.replaceWith(frame)
+    const pageUrl = videoPageUrl(src)
+    if (pageUrl) {
+      const link = doc.createElement('a')
+      link.href = pageUrl
+      link.target = '_blank'
+      link.rel = 'noopener noreferrer'
+      link.textContent = '在网页打开视频'
+      el.replaceWith(frame, link)
+    } else {
+      el.replaceWith(frame)
+    }
   })
   return root.innerHTML
 }
@@ -806,7 +924,13 @@ img{max-width:100%}table{border-collapse:collapse}td,th{border:1px solid #ebeced
 figure{margin:0 0 1em;max-width:100%}
 figure[data-align="center"]{margin-left:auto;margin-right:auto;width:fit-content}
 figure[data-align="right"]{margin-left:auto;width:fit-content}
-figcaption{text-align:center;color:#8491a5;font-size:.9em;line-height:1.5;margin-top:6px}
+figcaption,table>caption{text-align:center;color:#8491a5;font-size:.9em;line-height:1.5}
+figcaption{margin-top:6px}table>caption{padding-bottom:6px}
+.document-contents{border-bottom:1px solid currentColor;padding:0 0 1em;margin:0 0 1.5em}
+.document-contents__title{font-weight:700;margin:.4em 0}
+.document-contents__item{margin:.15em 0}.document-contents__item--h2{margin-inline-start:1.5em}.document-contents__item--h3{margin-inline-start:3em}
+[data-scholar-statement]{border-inline-start:3px solid #8491a5;margin:1em 0;padding:.35em .85em}
+.document-footnotes,.document-bibliography{border-top:1px solid #c3cbd3;margin-top:1.7em}
 math{font-family:'Latin Modern Math','STIX Two Math','Cambria Math',serif}
 /* 长公式不许撑破页面：导出的文件里没法像编辑器那样量宽度缩放（那是 JS 干的），
    所以这里给一个兜底 —— 太宽就在公式自己那一行里横向滚动，正文列宽不变 */

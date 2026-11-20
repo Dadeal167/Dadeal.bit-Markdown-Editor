@@ -63,8 +63,18 @@ export interface MathRange {
   end: number
   /** `$` 里面的 LaTeX */
   latex: string
+  punctuation: string
   /** `$` 后面第一个字符的位置（用来切文本） */
   innerStart: number
+}
+
+export function splitInlineMathPunctuation(value: string): { latex: string; punctuation: string } {
+  const trimmed = value.trim()
+  const punctuation = trimmed.match(/[。！？；：]+$/)?.[0] ?? ''
+  return {
+    latex: punctuation ? trimmed.slice(0, -punctuation.length).trimEnd() : trimmed,
+    punctuation,
+  }
 }
 
 /** 找出一段文本里所有"看着像公式"的 `$…$`（要求同一行内成对） */
@@ -73,13 +83,14 @@ export function findMathRanges(text: string): MathRange[] {
   const re = /(?<!\\)\$([^$\n]+?)(?<!\\)\$/g
   let m: RegExpExecArray | null
   while ((m = re.exec(text))) {
-    if (!looksLikeLatex(m[1])) {
+    const { latex, punctuation } = splitInlineMathPunctuation(m[1])
+    if (!looksLikeLatex(latex)) {
       // 否决之后要从这个 $ 的**后一个字符**继续找，否则会把紧跟其后的真公式一起漏掉
       // （实测：`他说 $100 元，$x^2$ 是公式` 里的 $x^2$ 会被吃掉）
       re.lastIndex = m.index + 1
       continue
     }
-    out.push({ start: m.index, end: m.index + m[0].length, latex: m[1].trim(), innerStart: m.index + 1 })
+    out.push({ start: m.index, end: m.index + m[0].length, latex, punctuation, innerStart: m.index + 1 })
   }
   return out
 }
@@ -95,6 +106,7 @@ export function scanRawMath(text: string): { parts: MathPart[]; count: number } 
   for (const r of ranges) {
     if (r.start > last) parts.push({ math: false, value: text.slice(last, r.start), display: false })
     parts.push({ math: true, value: r.latex, display: false })
+    if (r.punctuation) parts.push({ math: false, value: r.punctuation, display: false })
     last = r.end
   }
   if (!ranges.length) return { parts: [{ math: false, value: text, display: false }], count: 0 }
@@ -207,6 +219,7 @@ export function convertRawMath(editor: Editor): number {
         // 公式只在它的起点所在的那个子节点里生成一次
         if (r.start >= childStart && r.start < childEnd) {
           nodes.push(schema.nodes.mathInline.create({ latex: r.latex }))
+          if (r.punctuation) nodes.push(schema.text(r.punctuation, entry.node.marks))
           total += 1
         }
         cursor = Math.max(cursor, e)

@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { EditorContent } from '@tiptap/react'
 import type { Editor } from '@tiptap/core'
 import Toolbar from './Toolbar'
-import type { ToolbarHandlers } from './Toolbar'
+import type { ToolbarHandlers } from './toolbar/toolbarItems'
 import StatusBar from './StatusBar'
 import MathModal from './MathModal'
 import TableModal from './TableModal'
@@ -13,15 +13,53 @@ import VideoModal from './VideoModal'
 import HelpModal from './HelpModal'
 import FeedbackModal from './FeedbackModal'
 import SearchBox from './SearchBox'
+import MarkdownSourceModal from './workspace/MarkdownSourceModal'
+import PublicationLayoutModal from './publication/PublicationLayoutModal'
+import EditionModal, { EditionBlockPicker, type EditionRequest } from './publication/EditionModal'
+import { hasEditionBlocks } from './publication/editions'
+import { insertEditionBlock } from './tiptap/EditionBlock'
+import { readingModeKey } from './tiptap/ReadingMode'
+import WorkspacePanel, { WorkspaceRenameModal } from './workspace/WorkspacePanel'
+import DocumentAssetsModal from './workspace/DocumentAssetsModal'
+import { resolveProjectAsset, type AssetScope } from './workspace/documentAssets'
+import { useDocumentWorkspace } from './workspace/useDocumentWorkspace'
+import type { WorkspaceSearchResult } from './workspace/workspaceSearch'
+import { findMatches, scrollToMatch } from './search'
+import { commitWorkspaceRename, headingMatches, normalizeWorkspacePath, renamedWorkspaceLinks, resolveWikiPath,
+  workspaceBacklinks, workspaceHeadings, type WorkspaceFile, type WorkspaceRename } from './workspace/documentWorkspace'
+import { parseWikiLink, wikiLinkEvent } from './tiptap/WikiLink'
+import { packMarkdownAssets, storeClipboardAsset } from './markdownAssets'
+import { loadPublicationLayout, printPublicationCss, savePublicationLayout } from './publication/publicationLayout'
+import { renderSourcePreview, reviewSource } from './workspace/sourceReview'
+import EquationToolsModal from './EquationToolsModal'
+import ChapterOutline, { PrintContents } from './ChapterOutline'
+import ObjectToolsModal from './ObjectToolsModal'
+import ScholarTools, { type ScholarTab } from './ScholarTools'
+import VersionCompareModal, { type VersionComparison } from './workspace/VersionCompareModal'
+import type { VersionChange } from './workspace/versionChanges'
+import { ScholarBibliography } from './tiptap/ScholarNodes'
+import ExportPreflightModal from './publication/ExportPreflightModal'
+import { checkExport, type ExportReview, type ExportTarget } from './publication/exportPreflight'
+import { gotoDocumentNode } from './tiptap/objectReferences'
+import { equationNumberingKey, gotoEquation, insertEquationReference } from './math/equationIndex'
+import { documentMacros, MACRO_LANGUAGE } from './math/documentMacros'
+import { diagramsIn, exportDiagrams, loadDiagram, MERMAID_LANGUAGE, MERMAID_SAMPLE } from './mermaidDiagrams'
+import { writingFocusKey } from './tiptap/WritingFocus'
 import { sessionMs, sessionStartedAt, totalUsageMs } from './usageTime'
 import type { EditorApi, OutlineItem } from './types'
 import * as actions from './editorActions'
-import SaveMenu from './SaveMenu'
-import type { SaveFormat } from './SaveMenu'
+import SaveMenu from './publication/SaveMenu'
+import type { SaveFormat } from './publication/saveOptions'
+import { loadLocalMarkdownFiles, storeLocalMarkdownFile } from './docStore'
+import {
+  findAssetFile, localFileMatches, localFilePickers, markdownHash, markdownTypes, projectImportedImages, readLocalMarkdown, serializeLocalMarkdown,
+  writeLocalMarkdown, type LocalDirectoryHandle, type LocalFileHandle, type LocalMarkdownFile,
+} from './localMarkdownFile'
 import { exportZhihuMarkdown } from './saveFormats'
 import { setMathEditHandler } from './mathEvents'
 import { useMarkdownEditor } from './useMarkdownEditor'
 import DocMenu from './DocMenu'
+import { mergeDocumentBackup, parseDocumentBackup, serializeDocumentBackup } from './workspace/documentBackup'
 import ShortcutModal from './ShortcutModal'
 import TypographyMenu from './TypographyMenu'
 import ZhihuModal from './ZhihuModal'
@@ -34,15 +72,24 @@ import {
   type PageBackground,
 } from './pageBackground'
 import { applyTheme, loadTheme, saveTheme, watchSystemTheme, type Theme } from './theme'
+import EffectPanel from './EffectPanel'
+import {
+  loadMouseEffectSettings,
+  resetMouseEffectSettings,
+  saveMouseEffectSettings,
+  type MouseEffectSettings,
+} from './effects/mouseEffect'
 import { stripLeakedMarks } from './tiptap/mathMarkdown'
 import { useDimColorFix } from './useDimColorFix'
 import { fontEmbedCss, formatSize, loadCustomFonts, type CustomFont } from './customFonts'
-import { SHORTCUT_ACTIONS, loadBindings, normalizeEvent, shortcuts } from './shortcuts'
+import { SHORTCUT_ACTIONS, TOOLBAR_ORB_REVEAL_EVENT, TOOLBAR_TOOLS_EVENT, loadBindings, normalizeEvent, shortcuts } from './shortcuts'
 import { buildFormulaDiag, downloadFormulaDiag, withDiag } from './mathDiagnostics'
-import type { Doc } from './documents'
+import type { Doc, DocVersion } from './documents'
 import {
   DEMO_MD,
   createDoc,
+  captureDocVersion,
+  isDocStoreLoading,
   loadStore,
   onStoreReloaded,
   onStoreWriteFailed,
@@ -52,6 +99,7 @@ import {
 } from './documents'
 
 const SAVE_DELAY_MS = 1200
+const LOCAL_FILE_EDITING = __BUILD_MODE__ === 'effect'
 
 interface MathSeed {
   latex: string
@@ -66,12 +114,41 @@ export default function ZhihuEditor() {
   const [boot] = useState(() => loadStore())
   const editorRef = useRef<Editor | null>(null)
   const saveTimer = useRef<number | null>(null)
-  const bootDoc = boot.docs.find((d) => d.id === boot.currentId) ?? boot.docs[0]
+  const bootDoc = boot.docs.find((d) => d.id === boot.currentId && !d.trashedAt) ?? boot.docs.find((d) => !d.trashedAt) ?? boot.docs[0]
   const titleRef = useRef(bootDoc.title)
   const mdRef = useRef(bootDoc.md)
   const [docs, setDocs] = useState<Doc[]>(boot.docs)
   const [currentId, setCurrentId] = useState(bootDoc.id)
+  const [localFiles, setLocalFiles] = useState(() => new Map<string, LocalMarkdownFile>())
+  const [localFilesReady, setLocalFilesReady] = useState(!LOCAL_FILE_EDITING)
+  const [localConflict, setLocalConflict] = useState<string | null>(null)
+  const [localConflictError, setLocalConflictError] = useState('')
+  const [localOperation, setLocalOperation] = useState<string | null>(null)
+  const [folderDocuments, setFolderDocuments] = useState<{ handle: LocalFileHandle; directory: FileSystemDirectoryHandle }[]>([])
+  const localOperationRef = useRef<string | null>(null)
+  const [diskStatus, setDiskStatus] = useState<{ id: string; file: LocalMarkdownFile; md: string; saved: boolean }>()
   const [markdownInput, setMarkdownInput] = useState(true)
+  const [sourceEdit, setSourceEdit] = useState<{ id: string; initial: string } | null>(null)
+  const [assetDocumentId, setAssetDocumentId] = useState<string>()
+  const [publication, setPublication] = useState(loadPublicationLayout)
+  const [publicationOpen, setPublicationOpen] = useState(false)
+  const [renameFile, setRenameFile] = useState<WorkspaceFile>()
+  const [workspacePaths, setWorkspacePaths] = useState(() => new Map<string, string>())
+  const workspaceNavigation = useRef(false)
+  const [autoAssets, setAutoAssets] = useState(() => {
+    try { return localStorage.getItem('dadealbit-auto-assets') !== 'off' } catch { return true }
+  })
+  const [writingFocus, setWritingFocus] = useState(false)
+  const [equationToolsOpen, setEquationToolsOpen] = useState(false)
+  const [objectToolsOpen, setObjectToolsOpen] = useState(false)
+  const [scholarTab, setScholarTab] = useState<ScholarTab | null>(null)
+  const [comparison, setComparison] = useState<VersionComparison | null>(null)
+  const [compareFeedback, setCompareFeedback] = useState('')
+  const [exportReview, setExportReview] = useState<(ExportReview & { resume?: 'docx' | 'pdf' | 'zhihu' }) | null>(null)
+  const [editionRequest, setEditionRequest] = useState<EditionRequest | null>(null)
+  const [editionBlockPicker, setEditionBlockPicker] = useState(false)
+  const [reading, setReading] = useState(false)
+  const exportingWord = useRef(false)
 
   const [title, setTitle] = useState(bootDoc.title)
   const [savedAt, setSavedAt] = useState<number | null>(bootDoc.at || null)
@@ -98,6 +175,13 @@ export default function ZhihuEditor() {
   const [saveFailed, setSaveFailed] = useState(false)
   const saveFailedRef = useRef(false)
   const [theme, setTheme] = useState<Theme>(() => loadTheme())
+  const [effect, setEffect] = useState<MouseEffectSettings>(() => loadMouseEffectSettings())
+  const [effectOpen, setEffectOpen] = useState(false)
+
+  /* 鼠标点击特效：启动时按存下来的设置装上（默认「只显点击波纹」+ 淡蓝 + 80% 不透明度） */
+  useEffect(() => {
+    saveMouseEffectSettings(effect)
+  }, [effect])
   const [customFonts, setCustomFonts] = useState<CustomFont[]>([])
   /**
    * 文档体检结果。
@@ -134,8 +218,7 @@ export default function ZhihuEditor() {
       saveFailedRef.current = true
       setSaveFailed(true)
       window.alert(
-        '保存失败：浏览器没能把内容写进本地数据库（可能是磁盘空间不够，或者浏览器被设成不保存数据）。\n' +
-          '刚改的这一版已经临时存到备用位置；建议先「保存 .md」导出到文件，再排查一下。',
+        '浏览器未能保存文档。请先导出 Markdown 存档，再检查浏览器存储权限和可用空间。',
       )
     })
     onStoreWriteOk(() => {
@@ -143,25 +226,9 @@ export default function ZhihuEditor() {
       saveFailedRef.current = false
       setSaveFailed(false)
     })
-    /* IndexedDB 迟到（启动时那 3 秒超时了）：界面先拿 localStorage 那份画出来了，
-       等它真的读回来，直接换成它那份（存储层只在"窗口期内没编辑过"时才喊这一声）。 */
-    onStoreReloaded((store) => {
-      docsRef.current = store.docs
-      currentIdRef.current = store.currentId
-      setDocs(store.docs)
-      setCurrentId(store.currentId)
-      const cur = store.docs.find((d) => d.id === store.currentId)
-      if (cur) {
-        mdRef.current = cur.md
-        titleRef.current = cur.title
-        const ed = editorRef.current
-        if (ed) actions.setMarkdown(ed, cur.md)
-      }
-    })
     return () => {
       onStoreWriteFailed(null)
       onStoreWriteOk(null)
-      onStoreReloaded(null)
     }
   }, [])
 
@@ -193,15 +260,48 @@ export default function ZhihuEditor() {
      否则会拿着过期的 docs/currentId 去写存储，把别的文档覆盖掉。 */
   const docsRef = useRef(docs)
   const currentIdRef = useRef(currentId)
+  const localFile = localFiles.get(currentId)
+  const storedMarkdown = docs.find((doc) => doc.id === currentId)?.md
 
-  const writeStore = useCallback((nextDocs: Doc[], nextId: string): boolean => {
-    const ok = saveStore({ docs: nextDocs, currentId: nextId })
+  useEffect(() => {
+    if (!LOCAL_FILE_EDITING) return
+    let active = true
+    void loadLocalMarkdownFiles().then((stored) => {
+      if (active) setLocalFiles((current) => new Map([...stored, ...current]))
+    }).catch(() => {}).finally(() => {
+      if (active) setLocalFilesReady(true)
+    })
+    return () => { active = false }
+  }, [])
+
+  useEffect(() => {
+    if (!localFile || storedMarkdown === undefined) return
+    let active = true
+    void markdownHash(projectImportedImages(storedMarkdown, true)).then((hash) => {
+      if (active) setDiskStatus({ id: currentId, file: localFile, md: storedMarkdown, saved: hash === localFile.editorHash })
+    }).catch(() => {})
+    return () => { active = false }
+  }, [currentId, localFile, storedMarkdown])
+
+  const writeStore = useCallback((nextDocs: Doc[], nextId: string, onSaved?: (ok: boolean) => void): boolean => {
+    const ok = saveStore({ docs: nextDocs, currentId: nextId }, onSaved)
     if (!ok) return false
     docsRef.current = nextDocs
     currentIdRef.current = nextId
     setDocs(nextDocs)
     setCurrentId(nextId)
     return true
+  }, [])
+
+  const withCurrentContent = useCallback((md: string, at: number) => {
+    const title = titleRef.current
+    return docsRef.current.map((doc) => {
+      if (doc.id !== currentIdRef.current || doc.trashedAt || (doc.title === title && doc.md === md)) return doc
+      const saved = doc.versions?.[0]
+      const history = (doc.title || doc.md) && (!saved || at - saved.at >= 5 * 60_000)
+        ? captureDocVersion(doc, doc.at) : doc
+      return { ...history, title, md, at }
+    })
   }, [])
 
   /** 把当前编辑器内容写回当前文档并落盘 */
@@ -220,9 +320,7 @@ export default function ZhihuEditor() {
          正常内容第一行就原样返回，不花钱。 */
       const value = stripLeakedMarks(source, '自动保存')
       const at = Date.now()
-      const next = docsRef.current.map((d) =>
-        d.id === currentIdRef.current ? { ...d, title: titleRef.current, md: value, at } : d,
-      )
+      const next = withCurrentContent(value, at)
       const bytes = storeBytes({ docs: next, currentId: currentIdRef.current })
       if (!writeStore(next, currentIdRef.current)) {
         // 只弹一次，之后靠状态栏的常驻提醒（否则每打几个字就弹一次，没法用）
@@ -244,7 +342,7 @@ export default function ZhihuEditor() {
       }
       setSavedAt(at)
     },
-    [writeStore],
+    [withCurrentContent, writeStore],
   )
 
   const scheduleSave = useCallback(() => {
@@ -258,6 +356,39 @@ export default function ZhihuEditor() {
     if (fixNoteTimer.current !== null) window.clearTimeout(fixNoteTimer.current)
     fixNoteTimer.current = window.setTimeout(() => setFixNote(null), 9000)
   }, [])
+
+  const snapshotDocuments = useCallback(() => {
+    if (isDocStoreLoading()) throw new Error('文档库仍在加载，请稍后重试。')
+    const ed = editorRef.current
+    const md = ed?.isInitialized && !ed.isDestroyed ? actions.getMarkdown(ed) : mdRef.current
+    return withCurrentContent(md, Date.now())
+  }, [withCurrentContent])
+
+  const backupDocuments = useCallback(() => {
+    const docs = snapshotDocuments()
+    const now = new Date()
+    const day = new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 10)
+    actions.downloadText('Dadealbit-文档备份-' + day + '.json', serializeDocumentBackup(docs), 'application/json;charset=utf-8')
+    return '已导出 ' + docs.length + ' 篇文档，包含历史版本和回收站。'
+  }, [snapshotDocuments])
+
+  const restoreDocuments = useCallback(async (file: File) => {
+    const incoming = parseDocumentBackup(await file.text())
+    if (!incoming.length) return '备份文件不包含文档。'
+    const snapshot = snapshotDocuments()
+    const { added, updated, skipped } = mergeDocumentBackup(snapshot, incoming)
+    // 重试时也排一次保存，让存储层重试上次未能写入的文档。
+    const saved = await new Promise<boolean>((resolve) => {
+      writeStore([...added, ...snapshot.map((doc) => updated.get(doc.id) ?? doc)], currentIdRef.current, resolve)
+    })
+    if (!saved) throw new Error('备份未能保存到浏览器。请保留原文件，稍后重试。')
+    const results = []
+    if (added.length) results.push('已恢复 ' + added.length + ' 篇')
+    if (updated.size) results.push('已合并 ' + updated.size + ' 篇文档的版本历史')
+    if (!results.length) return '备份中的文档已存在。'
+    if (skipped) results.push('跳过 ' + skipped + ' 篇相同文档')
+    return results.join('，') + '。'
+  }, [snapshotDocuments, writeStore])
 
   const scanIssues = useCallback(() => {
     const ed = editorRef.current
@@ -273,7 +404,7 @@ export default function ZhihuEditor() {
   }, [])
 
   /**
-   * 「更多 → 检查图片与公式（打不开就修）」。
+   * 「更多 → 检查图片与公式」会修公式，并提示需要找回的图片。
    *
    * 名字里有"就修"，那就**真的修** —— 以前这一步只 count 不 repair，
    * 而 count 报的又是"修过之后还坏不坏"，于是永远显示 0、点了也什么都不变。
@@ -283,7 +414,7 @@ export default function ZhihuEditor() {
     const ed = editorRef.current
     if (!ed) return
     /* 整段包进 withDiag：会记下"这次操作前后公式摘要"，用户下次说"点完就坏"就有据可查 */
-    const { fixedMath, fixedRaw, images, math } = withDiag(ed, '检查图片与公式（打不开就修）', () => {
+    const { fixedMath, fixedRaw, images, math } = withDiag(ed, '检查图片与公式', () => {
       const fm = actions.repairAllMath(ed)
       const fr = actions.convertRawMath(ed)
       return {
@@ -298,14 +429,15 @@ export default function ZhihuEditor() {
     if (fixedMath || fixedRaw) scheduleSave()
 
     const parts: string[] = []
-    if (fixedMath) parts.push(`修好了 ${fixedMath} 个公式的写法`)
-    if (fixedRaw) parts.push(`把 ${fixedRaw} 处原文公式变成了真公式`)
-    if (parts.length) {
-      flash(`${parts.join('、')} ✅` + (math.unfixable ? `；还有 ${math.unfixable} 个自动修不了，点红框里的公式手动改` : ''))
-    } else if (!images && !math.unfixable && !math.stored) {
-      flash('检查完了：这篇文档里的图片和公式都正常 ✅')
-    } else if (math.stored && !fixedMath) {
-      flash(`有 ${math.stored} 个公式写法有问题，但自动修不了 —— 点一下红框里的公式可以手动改`)
+    if (fixedMath) parts.push(`已修复 ${fixedMath} 个公式`)
+    if (fixedRaw) parts.push(`已将 ${fixedRaw} 处文本转换为公式`)
+    if (math.unfixable) parts.push(`${math.unfixable} 个公式需要手动编辑`)
+    if (images && !parts.length) {
+      if (fixNoteTimer.current !== null) window.clearTimeout(fixNoteTimer.current)
+      setFixNote(null)
+    } else {
+      if (images) parts.push(`${images} 张图片需要重新导入`)
+      flash(parts.length ? parts.join('。') + '。' : '检查完成。未发现图片或公式问题。')
     }
   }, [flash, scheduleSave])
 
@@ -326,21 +458,23 @@ export default function ZhihuEditor() {
   /** 选导出文件夹（或直接选图片）把打不开的图片嵌进文档 */
   const repairImages = useCallback(
     (fromFolder: boolean, done?: () => void) => {
+      const id = currentIdRef.current
       actions.pickFiles({ accept: 'image/*', multiple: true, directory: fromFolder }, async (files) => {
         const ed = editorRef.current
-        if (!ed) {
+        if (!ed || currentIdRef.current !== id) {
           done?.()
           return
         }
         // 这段是异步的（要读文件、压缩），出错不能让界面停在"什么也没发生"
         let r: Awaited<ReturnType<typeof actions.embedImages>>
         try {
-          r = await actions.embedImages(ed, files)
+          r = await actions.embedImages(ed, files, localFiles.has(id), () => currentIdRef.current === id)
         } catch (e) {
-          flash('图片没能读进来：' + String(e).slice(0, 80))
+          flash('无法读取图片：' + String(e).slice(0, 80))
           done?.()
           return
         }
+        if (currentIdRef.current !== id) return
         const left = actions.collectBrokenImages(ed).length
         setIssues((v) => ({ ...v, images: left }))
         if (r.fixed) {
@@ -350,15 +484,15 @@ export default function ZhihuEditor() {
               (left ? `，还有 ${left} 张没找到（${r.missing.slice(0, 3).join('、')}）` : ''),
           )
         } else if (r.missing.length) {
-          flash('选中的文件里没找到这些图片。试试点「选导出文件夹」，选那个装着 assets 文件夹的目录')
+          flash('所选文件不包含待修复的图片。请选择包含 assets 的导出文件夹。')
         } else {
-          flash('这篇文档里没有需要修复的图片')
+          flash('当前文档无待修复的图片。')
         }
         // 修完（或没修成）都通知一声：知乎面板要重新体检，才知道现在能不能传
         done?.()
       })
     },
-    [flash, scheduleSave],
+    [flash, localFiles, scheduleSave],
   )
 
   /** 把写法坏了的公式一次性修好 */
@@ -373,12 +507,9 @@ export default function ZhihuEditor() {
     setIssues((v) => ({ ...v, math: left.stored, mathHard: left.unfixable }))
     if (fixed) {
       scheduleSave()
-      flash(
-        `已修好 ${fixed} 个公式的写法问题 ✅` +
-          (left.unfixable ? `；还有 ${left.unfixable} 个自动修不了，点一下红框里的公式手动改` : ''),
-      )
+      flash(`已修复 ${fixed} 个公式。` + (left.unfixable ? `${left.unfixable} 个公式仍需手动编辑。` : ''))
     } else {
-      flash('这些公式的写法自动修不了，点一下红框里的公式可以手动改')
+      flash('无法自动修复公式。请编辑标记的公式。')
     }
   }, [flash, scheduleSave])
 
@@ -390,28 +521,26 @@ export default function ZhihuEditor() {
     scanIssues()
     if (fixed) {
       scheduleSave()
-      flash(`已把 ${fixed} 处原文公式变成真正的公式 ✅`)
+      flash(`已将 ${fixed} 处文本转换为公式。`)
     } else {
-      flash('没找到还能转换的原文公式')
+      flash('未找到可转换的公式。')
     }
   }, [flash, scanIssues, scheduleSave])
 
   /** 切换文档：先把当前这篇存下来，再载入目标 */
   const switchDoc = useCallback(
-    (id: string) => {
-      if (id === currentIdRef.current) return
+    (id: string): boolean => {
+      if (id === currentIdRef.current) return true
       const ed = editorRef.current
       const currentMd = ed ? actions.getMarkdown(ed) : mdRef.current
-      const at = Date.now()
-      const nextDocs = docsRef.current.map((d) =>
-        d.id === currentIdRef.current ? { ...d, title: titleRef.current, md: currentMd, at } : d,
-      )
+      const nextDocs = withCurrentContent(currentMd, Date.now())
       const target = nextDocs.find((d) => d.id === id)
-      if (!target) return
+      if (!target || target.trashedAt) return false
       if (!writeStore(nextDocs, id)) {
-        window.alert('切换失败：文档太大存不下（试试少放几张图片）')
-        return
+        window.alert('切换失败：浏览器无法保存文档，请检查可用存储空间。')
+        return false
       }
+      if (saveTimer.current !== null) window.clearTimeout(saveTimer.current)
       titleRef.current = target.title
       setTitle(target.title)
       mdRef.current = target.md
@@ -420,23 +549,22 @@ export default function ZhihuEditor() {
         actions.setMarkdown(ed, target.md)
         scanIssues()
       }
+      return true
     },
-    [scanIssues, writeStore],
+    [scanIssues, withCurrentContent, writeStore],
   )
 
   /** 新建一篇空文档并切过去（示例内容只留给第一次打开时的第一篇） */
   const createDocument = useCallback(() => {
     const ed = editorRef.current
     const currentMd = ed ? actions.getMarkdown(ed) : mdRef.current
-    const at = Date.now()
-    const saved = docsRef.current.map((d) =>
-      d.id === currentIdRef.current ? { ...d, title: titleRef.current, md: currentMd, at } : d,
-    )
+    const saved = withCurrentContent(currentMd, Date.now())
     const fresh = createDoc('', '')
     if (!writeStore([fresh, ...saved], fresh.id)) {
-      window.alert('新建失败：文档太大存不下（试试少放几张图片）')
+      window.alert('新建失败：浏览器无法保存文档，请检查可用存储空间。')
       return
     }
+    if (saveTimer.current !== null) window.clearTimeout(saveTimer.current)
     titleRef.current = ''
     setTitle('')
     mdRef.current = ''
@@ -446,22 +574,24 @@ export default function ZhihuEditor() {
       scanIssues()
     }
     requestAnimationFrame(() => editorRef.current?.commands.focus('start'))
-  }, [scanIssues, writeStore])
+  }, [scanIssues, withCurrentContent, writeStore])
 
-  /** 删除一篇文档；删掉的是当前这篇就切到第一篇 */
+  /** 回收站与文档保存在同一条记录中，移动和恢复都只需要一次写入。 */
   const deleteDocument = useCallback(
     (id: string) => {
-      const nextDocs = docsRef.current.filter((d) => d.id !== id)
-      if (nextDocs.length === 0) return
-      const nextId = id === currentIdRef.current ? nextDocs[0].id : currentIdRef.current
-      // 先落盘、成功了再改界面与 ref：否则写入失败时界面已经切走、
-      // 而 currentIdRef 还指着被删的那篇，下一次自动保存会把内容写进"已删除"的文档
+      if (isDocStoreLoading()) { flash('文档库正在加载。请稍后重试。'); return }
+      const wasCurrent = id === currentIdRef.current
+      const snapshot = snapshotDocuments()
+      const target = snapshot.find((doc) => doc.id !== id && !doc.trashedAt) ?? createDoc()
+      const nextDocs = snapshot.map((doc) => doc.id === id ? { ...doc, trashedAt: Date.now() } : doc)
+      if (wasCurrent && !nextDocs.some((doc) => doc.id === target.id)) nextDocs.unshift(target)
+      const nextId = wasCurrent ? target.id : currentIdRef.current
       if (!writeStore(nextDocs, nextId)) {
-        window.alert('删除失败：写入存储出错')
+        flash('无法移入回收站。请检查浏览器存储。')
         return
       }
-      if (id === currentIdRef.current) {
-        const target = nextDocs[0]
+      if (wasCurrent) {
+        if (saveTimer.current !== null) window.clearTimeout(saveTimer.current)
         titleRef.current = target.title
         setTitle(target.title)
         mdRef.current = target.md
@@ -473,14 +603,126 @@ export default function ZhihuEditor() {
         }
       }
     },
-    [scanIssues, writeStore],
+    [flash, scanIssues, snapshotDocuments, writeStore],
   )
+
+  const restoreTrashedDocument = useCallback((id: string) => {
+    if (isDocStoreLoading()) return '文档库正在加载。请稍后重试。'
+    const snapshot = snapshotDocuments()
+    const next = snapshot.map((doc) => doc.id === id ? { ...doc, trashedAt: undefined } : doc)
+    return writeStore(next, currentIdRef.current) ? '文档已恢复。' : '恢复失败。请检查浏览器存储。'
+  }, [snapshotDocuments, writeStore])
+
+  const saveVersion = useCallback(() => {
+    if (isDocStoreLoading()) return '文档库正在加载。请稍后重试。'
+    const snapshot = snapshotDocuments()
+    const current = snapshot.find((doc) => doc.id === currentIdRef.current)
+    if (!current || (!current.title && !current.md)) return '当前文档没有可保存的内容。'
+    const versioned = captureDocVersion(current)
+    if (versioned === current) return '当前内容已在版本历史中。'
+    const next = snapshot.map((doc) => doc.id === current.id ? versioned : doc)
+    return writeStore(next, current.id) ? '已保存版本。' : '版本保存失败。请检查浏览器存储。'
+  }, [snapshotDocuments, writeStore])
+
+  const restoreVersion = useCallback((version: DocVersion) => {
+    if (isDocStoreLoading()) return '文档库正在加载。请稍后重试。'
+    const snapshot = snapshotDocuments()
+    const current = snapshot.find((doc) => doc.id === currentIdRef.current)
+    if (!current?.versions?.includes(version)) return '版本已不可用。'
+    if (current.title === version.title && current.md === version.md) return '该版本与当前内容相同。'
+    const restored = { ...captureDocVersion(current), title: version.title, md: version.md, at: Date.now() }
+    if (!writeStore(snapshot.map((doc) => doc.id === current.id ? restored : doc), current.id)) {
+      return '恢复失败。请检查浏览器存储。'
+    }
+    if (saveTimer.current !== null) window.clearTimeout(saveTimer.current)
+    titleRef.current = restored.title
+    mdRef.current = restored.md
+    setTitle(restored.title)
+    setSavedAt(restored.at)
+    const ed = editorRef.current
+    if (ed) {
+      actions.setMarkdown(ed, restored.md)
+      scanIssues()
+    }
+    return '已恢复版本。恢复前的内容已保留在历史中。'
+  }, [scanIssues, snapshotDocuments, writeStore])
+
+  const compareVersion = (version: DocVersion) => {
+    const current = snapshotDocuments().find((doc) => doc.id === currentIdRef.current)
+    if (!current) return
+    setCompareFeedback('')
+    setComparison({ id: current.id, version, title: current.title, md: current.md })
+    setDocsOpen(false)
+  }
+
+  const restoreVersionChange = (change: VersionChange | 'title') => {
+    if (!comparison || isDocStoreLoading()) return
+    const snapshot = snapshotDocuments()
+    const current = snapshot.find((doc) => doc.id === currentIdRef.current)
+    if (!current || current.id !== comparison.id || current.title !== comparison.title || current.md !== comparison.md) {
+      setCompareFeedback('当前文档已更新。请重新打开版本对比。')
+      return
+    }
+    const title = change === 'title' ? comparison.version.title : current.title
+    const md = change === 'title' ? current.md : current.md.slice(0, change.start) + change.oldText + current.md.slice(change.end)
+    const next = { ...captureDocVersion(current), title, md, at: Date.now() }
+    if (!writeStore(snapshot.map((doc) => doc.id === current.id ? next : doc), current.id)) {
+      setCompareFeedback('无法保存恢复结果。请检查浏览器存储。')
+      return
+    }
+    if (saveTimer.current !== null) window.clearTimeout(saveTimer.current)
+    titleRef.current = title
+    mdRef.current = md
+    setTitle(title)
+    setSavedAt(next.at)
+    const instance = editorRef.current
+    if (instance && change !== 'title') {
+      actions.setMarkdown(instance, md, true)
+      scanIssues()
+    }
+    setComparison({ ...comparison, title, md: instance ? actions.getMarkdown(instance) : md })
+    setCompareFeedback('已恢复选中的内容。恢复前的内容保存在版本历史中。')
+  }
+
+  const activeDocs = useMemo(() => docs.filter((doc) => !doc.trashedAt), [docs])
 
   const refreshDerived = useCallback((ed: Editor) => {
     const storage = ed.storage as unknown as { characterCount?: { characters: () => number } }
     setWordCount(storage.characterCount?.characters?.() ?? 0)
-    setOutline(actions.getOutline(ed))
+    if (!LOCAL_FILE_EDITING) setOutline(actions.getOutline(ed))
   }, [])
+
+  useEffect(() => {
+    // 数据库迟到时，先现取正文和标题，包含还没触发自动保存的输入。
+    onStoreReloaded((store, live) => {
+      const target = store.docs.find((doc) => doc.id === store.currentId)
+      if (!target) return
+      if (saveTimer.current !== null) window.clearTimeout(saveTimer.current)
+      docsRef.current = store.docs
+      currentIdRef.current = target.id
+      setDocs(store.docs)
+      setCurrentId(target.id)
+      mdRef.current = target.md
+      titleRef.current = target.title
+      setTitle(target.title)
+      setSavedAt(target.at)
+      const ed = editorRef.current
+      if (ed && !ed.isDestroyed && (live?.id !== target.id || live.md !== target.md)) {
+        actions.setMarkdown(ed, target.md)
+        refreshDerived(ed)
+        scanIssues()
+      }
+    }, () => {
+      const id = currentIdRef.current
+      const doc = docsRef.current.find((item) => item.id === id)
+      if (!doc) return
+      const ed = editorRef.current
+      const md = ed?.isInitialized && !ed.isDestroyed ? actions.getMarkdown(ed) : mdRef.current
+      const title = titleRef.current
+      return md === doc.md && title === doc.title ? doc : { ...doc, md, title, at: Date.now() }
+    })
+    return () => onStoreReloaded(null)
+  }, [refreshDerived, scanIssues])
 
   /* ---------- 启动器带过来的助手配置（#zhihu-token=…&zhihu-addr=…） ----------
      「开始使用.bat」启动助手之后，会把令牌通过地址栏 hash 带进来（hash 不会发给任何服务器），
@@ -517,6 +759,18 @@ export default function ZhihuEditor() {
   /* ---------- 内核 ---------- */
   const editor = useMarkdownEditor({
     initialMarkdown: mdRef.current,    markdownInput,
+    captureImageTarget: LOCAL_FILE_EDITING ? () => {
+      const id = currentIdRef.current
+      const directory = localFiles.get(id)?.directory
+      const isCurrent = () => currentIdRef.current === id
+      return { isCurrent, save: autoAssets && directory ? async (url) => {
+        try { return await storeClipboardAsset(directory, url) }
+        catch {
+          if (isCurrent()) flash('无法写入 assets 文件夹。图片已内嵌到文档。')
+          return undefined
+        }
+      } : undefined }
+    } : undefined,
     onReady: (ed) => {
       editorRef.current = ed
       ;(window as unknown as { __EDITOR__: Editor }).__EDITOR__ = ed
@@ -538,7 +792,7 @@ export default function ZhihuEditor() {
           const fixed = actions.convertRawMath(ed2)
           if (fixed) {
             scheduleSave()
-            flash(`打开时自动修好了 ${fixed} 处公式原文 ✅`)
+            flash(`已自动将 ${fixed} 处文本转换为公式。`)
           }
         }
         scanIssues()
@@ -557,7 +811,7 @@ export default function ZhihuEditor() {
   }, [editor])
 
   /* 深色下把"太暗的文字颜色"显示成近白色（文档里的行内 color 一个字不动，见 readableColors.ts） */
-  useDimColorFix(theme, editor)
+  useDimColorFix(theme, pageBackground.color, editor)
 
   /* ---------- 选中状态：决定「文字颜色」能不能用 ---------- */
   useEffect(() => {
@@ -595,6 +849,7 @@ export default function ZhihuEditor() {
   /* ---------- 公式节点被点击 → 打开弹窗编辑 ---------- */
   useEffect(() => {
     setMathEditHandler((req) => {
+      if (editorRef.current && !editorRef.current.isEditable) return
       setMathSeed({ latex: req.latex, display: req.display, pos: req.pos })
       setMathOpen(true)
     })
@@ -621,7 +876,7 @@ export default function ZhihuEditor() {
 
   // 打开大纲时按当前文档重新生成，避免用到上一次编辑缓存的旧列表
   useEffect(() => {
-    if (!outlineOpen) return
+    if (!outlineOpen || LOCAL_FILE_EDITING) return
     const instance = editorRef.current
     if (instance) setOutline(actions.getOutline(instance))
   }, [outlineOpen, editor])
@@ -631,51 +886,404 @@ export default function ZhihuEditor() {
     return ed ? actions.getMarkdown(ed) : mdRef.current
   }, [])
 
+  const numberEquations = LOCAL_FILE_EDITING && docs.some((doc) => doc.id === currentId && doc.numberEquations)
+  const includeContents = LOCAL_FILE_EDITING && docs.some((doc) => doc.id === currentId && doc.exportContents)
+  useEffect(() => {
+    if (editor && !editor.isDestroyed && LOCAL_FILE_EDITING &&
+        equationNumberingKey.getState(editor.state) !== numberEquations) {
+      editor.view.dispatch(editor.state.tr.setMeta(equationNumberingKey, numberEquations))
+    }
+  }, [editor, numberEquations])
+
+  const setDocumentOption = (option: 'numberEquations' | 'exportContents', enabled: boolean) => {
+    if (isDocStoreLoading()) {
+      flash('文档库仍在加载。请稍后重试。')
+      return
+    }
+    const id = currentIdRef.current
+    const next = snapshotDocuments().map((doc) => doc.id === id ? { ...doc, [option]: enabled } : doc)
+    if (!writeStore(next, id)) flash('无法保存文档设置。')
+  }
+
+  const exportContentsTitle = useCallback(() => LOCAL_FILE_EDITING &&
+    docsRef.current.some((doc) => doc.id === currentIdRef.current && doc.exportContents) ? titleRef.current : undefined, [])
+
+  useEffect(() => {
+    if (editor && !editor.isDestroyed && LOCAL_FILE_EDITING) {
+      editor.view.dispatch(editor.state.tr.setMeta(writingFocusKey, writingFocus))
+    }
+  }, [editor, writingFocus])
+
+  const openMarkdownSource = useCallback(() => {
+    const id = currentIdRef.current
+    setSourceEdit({ id, initial: projectImportedImages(currentMarkdown(), localFiles.has(id)) })
+  }, [currentMarkdown, localFiles])
+
+  const applyMarkdownSource = (value: string) => {
+    const ed = editorRef.current
+    const id = currentIdRef.current
+    if (!ed || ed.isDestroyed || sourceEdit?.id !== id) return '当前文档已切换。'
+    if (value.includes('\u0000')) return '源码中包含无效字符。'
+    actions.setMarkdown(ed, value, true)
+    persistDraft(actions.getMarkdown(ed))
+    scanIssues()
+    const directory = localFiles.get(id)?.directory
+    if (directory) void importFolderImages(id, directory)
+    return undefined
+  }
+
+  const rememberFile = useCallback((id: string, file: LocalMarkdownFile) => {
+    setLocalFiles((current) => new Map(current).set(id, file))
+    void storeLocalMarkdownFile(id, file).catch(() => {
+      if (currentIdRef.current === id) flash('原文件关联仅保留在本次会话中。')
+    })
+  }, [flash])
+
+  const loadMarkdownFile = useCallback((filename: string, text: string) => {
+    const saved = withCurrentContent(currentMarkdown(), Date.now())
+    const name = filename.replace(/\.(md|markdown|txt)$/i, '')
+    const imported = createDoc(name, text)
+    if (!writeStore([imported, ...saved], imported.id)) {
+      flash('无法打开文档。请检查浏览器存储。')
+      return null
+    }
+    if (saveTimer.current !== null) window.clearTimeout(saveTimer.current)
+    titleRef.current = name
+    setTitle(name)
+    mdRef.current = text
+    setSavedAt(imported.at)
+    const ed = editorRef.current
+    if (ed) {
+      const { fixedMath } = actions.setMarkdown(ed, text)
+      scanIssues()
+      scheduleSave()
+      if (fixedMath) flash(`已修复 ${fixedMath} 处公式语法。`)
+    }
+    return imported
+  }, [currentMarkdown, flash, scanIssues, scheduleSave, withCurrentContent, writeStore])
+
+  const importFolderImages = useCallback(async (id: string, directory: FileSystemDirectoryHandle, scope?: AssetScope) => {
+    const ed = editorRef.current
+    const active = () => currentIdRef.current === id && editorRef.current === ed
+    if (!ed || !active()) return
+    const authorized = scope ?? { root: directory, folder: [] }
+    const result = await actions.embedImages(ed, (src) => resolveProjectAsset(authorized, src), true, active)
+    if (!active()) return
+    scanIssues()
+    if (result.fixed) {
+      scheduleSave()
+      const left = actions.collectBrokenImages(ed).length
+      flash(`已导入 ${result.fixed} 张资源图片${left ? `，另有 ${left} 张图片待处理` : ''}。`)
+    }
+  }, [flash, scanIssues, scheduleSave])
+
+  const openLocalMarkdown = useCallback(async (handle: LocalFileHandle, directory?: FileSystemDirectoryHandle, scope?: AssetScope) => {
+    for (const [id, file] of localFiles) {
+      if (docsRef.current.some((doc) => doc.id === id && !doc.trashedAt) && await handle.isSameEntry(file.handle)) {
+        if (switchDoc(id) && directory) {
+          rememberFile(id, { ...file, directory })
+          await importFolderImages(id, directory, scope)
+        }
+        return currentIdRef.current === id ? id : undefined
+      }
+    }
+    if (!directory) {
+      for (const file of localFiles.values()) {
+        if (file.directory && (await file.directory.resolve(handle).catch(() => null))?.length === 1) {
+          directory = file.directory
+          break
+        }
+      }
+    }
+    const { markdown, source, diskHash } = await readLocalMarkdown(handle)
+    const imported = loadMarkdownFile(handle.name, markdown)
+    if (!imported) return
+    const canonical = currentMarkdown()
+    persistDraft(canonical)
+    rememberFile(imported.id, { handle, source, diskHash, directory, editorHash: await markdownHash(canonical) })
+    if (directory) await importFolderImages(imported.id, directory, scope)
+    return imported.id
+  }, [currentMarkdown, importFolderImages, loadMarkdownFile, localFiles, persistDraft, rememberFile, switchDoc])
+
+  const workspace = useDocumentWorkspace(LOCAL_FILE_EDITING, flash)
+  const workspaceRoot = workspace.root
+  const activeWorkspacePath = workspacePaths.get(currentId)
+  const activeWorkspaceFile = workspace.files.find((file) => file.path === activeWorkspacePath)
+  const assetScope = useMemo<AssetScope | undefined>(() => {
+    if (workspaceRoot && activeWorkspacePath) return { root: workspaceRoot, folder: activeWorkspacePath.split('/').slice(0, -1) }
+    if (localFile?.directory) return { root: localFile.directory, folder: [] }
+  }, [activeWorkspacePath, localFile?.directory, workspaceRoot])
+  useEffect(() => {
+    if (!workspaceRoot) return
+    let active = true
+    void Promise.all([...localFiles].map(async ([id, file]) => {
+      const parts = await workspaceRoot.resolve(file.handle).catch(() => null)
+      return [id, parts?.join('/')] as const
+    })).then((entries) => {
+      if (active) setWorkspacePaths(new Map(entries.flatMap(([id, path]) => path ? [[id, path]] : [])))
+    })
+    return () => { active = false }
+  }, [localFiles, workspaceRoot])
+
+  const workspaceDrafts = useMemo(() => new Map(docs.flatMap((doc) => {
+      const path = workspacePaths.get(doc.id)
+      return path && !doc.trashedAt ? [[path, doc] as const] : []
+    })), [docs, workspacePaths])
+  const backlinks = useMemo(() => workspace.visible && activeWorkspacePath
+    ? workspaceBacklinks(workspace.files, activeWorkspacePath, new Map([...workspaceDrafts].map(([path, doc]) => [path, doc.md])))
+    : [], [activeWorkspacePath, workspace.files, workspace.visible, workspaceDrafts])
+
+  const openWorkspaceFile = useCallback(async (file: WorkspaceFile, fragment = '') => {
+    if (workspaceNavigation.current) return
+    workspaceNavigation.current = true
+    try {
+      const scope = workspaceRoot ? { root: workspaceRoot, folder: file.path.split('/').slice(0, -1) } : undefined
+      const id = await openLocalMarkdown(file.handle, file.directory, scope)
+      if (!id || currentIdRef.current !== id) return
+      setWorkspacePaths((paths) => new Map(paths).set(id, file.path))
+      if (fragment) {
+        const ed = editorRef.current
+        const heading = ed && actions.getOutline(ed).find((item) => headingMatches(item.text, fragment))
+        if (ed && heading) actions.gotoPos(ed, heading.pos)
+        else flash('目标文档中找不到该标题。')
+      }
+      return id
+    } catch { flash('无法打开工作区文档。') }
+    finally { workspaceNavigation.current = false }
+  }, [flash, openLocalMarkdown, workspaceRoot])
+
+  const openWorkspaceResult = async (result: WorkspaceSearchResult) => {
+    const id = await openWorkspaceFile(result.file)
+    const ed = editorRef.current
+    if (!id || !ed || currentIdRef.current !== id) return
+    if (result.index === null) {
+      document.querySelector<HTMLInputElement>('.zh-title')?.focus()
+      return
+    }
+    const matches = findMatches(ed.state.doc, result.query)
+    const match = matches[result.index]
+    if (match) scrollToMatch(ed, match)
+    else flash('文档内容已更新，请刷新工作区后重新检索。')
+  }
+
+  useEffect(() => {
+    if (!LOCAL_FILE_EDITING) return
+    const follow = (event: Event) => {
+      const link = parseWikiLink((event as CustomEvent<string>).detail)
+      if (!link) return
+      if (!link.name) {
+        const ed = editorRef.current
+        const heading = ed && actions.getOutline(ed).find((item) => headingMatches(item.text, link.fragment))
+        if (ed && heading) actions.gotoPos(ed, heading.pos)
+        else flash('当前文档中找不到该标题。')
+        return
+      }
+      const path = resolveWikiPath(workspace.files.map((file) => file.path), workspacePaths.get(currentIdRef.current) ?? '', link.name)
+      const file = workspace.files.find((item) => item.path === path)
+      if (file) void openWorkspaceFile(file, link.fragment)
+      else if (workspace.status === 'permission') { workspace.setVisible(true); flash('请先重新连接工作区。') }
+      else flash(workspaceRoot ? '找不到唯一的链接目标。可在链接中指定文件夹路径。' : '请打开包含目标文档的本地工作区。')
+    }
+    window.addEventListener(wikiLinkEvent, follow)
+    return () => window.removeEventListener(wikiLinkEvent, follow)
+  }, [flash, openWorkspaceFile, workspace.files, workspace.status, workspace.setVisible, workspacePaths, workspaceRoot])
+
+  const previewSource = useCallback(async (value: string) => {
+    const ed = editorRef.current
+    if (!ed) return ''
+    const directory = sourceEdit ? localFiles.get(sourceEdit.id)?.directory : undefined
+    return renderSourcePreview(ed, value, directory ? (src) => findAssetFile(directory, src) : undefined)
+  }, [localFiles, sourceEdit])
+
+  const checkSource = useCallback((value: string) => {
+    const linked = sourceEdit ? localFiles.get(sourceEdit.id) : undefined
+    const sourcePath = sourceEdit ? workspacePaths.get(sourceEdit.id) ?? '' : ''
+    const paths = workspace.files.map((file) => file.path)
+    const home = sourcePath.slice(0, sourcePath.lastIndexOf('/') + 1)
+    return reviewSource(value, async (destination, wiki) => {
+      if (wiki) {
+        const link = parseWikiLink(destination)
+        if (!link || !paths.length && !workspaceRoot) return undefined
+        const path = resolveWikiPath(paths, sourcePath, link.name)
+        const target = workspace.files.find((file) => file.path === path)
+        if (!target) return `找不到唯一的链接目标「${link.name}」。`
+        if (!target.source) return `无法读取「${target.path}」。`
+        if (link.fragment && !workspaceHeadings(target.path === sourcePath ? value : target.source.markdown)
+          .some((heading) => headingMatches(heading.text, link.fragment))) {
+          return `「${target.path}」中找不到标题「${link.fragment.slice(1)}」。`
+        }
+        return undefined
+      }
+      const directory = sourcePath && workspaceRoot ? workspaceRoot : linked?.directory
+      if (!directory) return undefined
+      const [raw, fragment] = destination.split('#', 2)
+      let decoded: string
+      try { decoded = decodeURIComponent(raw.split('?')[0]) } catch { return `链接路径无法解码「${destination}」。` }
+      const path = normalizeWorkspacePath(decoded.startsWith('/') ? decoded : home + decoded)
+      if (!path) return `无法核对当前授权目录之外的链接「${destination}」。`
+      try {
+        let folder = directory
+        const parts = path.split('/')
+        const name = parts.pop()!
+        for (const part of parts) folder = await folder.getDirectoryHandle(part)
+        let target: FileSystemFileHandle
+        try { target = await folder.getFileHandle(name) }
+        catch (error) {
+          if (!(error instanceof DOMException && error.name === 'TypeMismatchError')) throw error
+          await folder.getDirectoryHandle(name)
+          return undefined
+        }
+        if (fragment && /\.(?:md|markdown)$/i.test(name)) {
+          const text = path === sourcePath ? value : (await readLocalMarkdown(target as LocalFileHandle)).markdown
+          if (!workspaceHeadings(text).some((heading) => headingMatches(heading.text, fragment))) {
+            return `「${path}」中找不到标题「${fragment}」。`
+          }
+        }
+      } catch { return `找不到或无法读取本地链接「${destination}」。` }
+      return undefined
+    })
+  }, [localFiles, sourceEdit, workspace.files, workspacePaths, workspaceRoot])
+
+  const renameWorkspaceFile = async (plan: WorkspaceRename) => {
+    if (!workspaceRoot || localOperationRef.current || workspaceNavigation.current) throw new Error('有本地操作正在进行。')
+    localOperationRef.current = currentIdRef.current
+    const editor = editorRef.current
+    const editable = editor?.isEditable
+    editor?.setEditable(false, false)
+    try {
+      if (workspaceRoot.requestPermission && await workspaceRoot.requestPermission({ mode: 'readwrite' }) !== 'granted') {
+        throw new Error('工作区需要写入权限。')
+      }
+      const paths = plan.files.map((file) => file.path)
+      const byPath = new Map(plan.files.map((file) => [file.path, file]))
+      const edits = new Map(plan.edits.map((edit) => [edit.file.path, edit]))
+      const changes: { doc: Doc; before: LocalMarkdownFile; path: string; md: string; title: string }[] = []
+      const snapshot = snapshotDocuments()
+      for (const doc of snapshot) {
+        const before = localFiles.get(doc.id)
+        if (!before || doc.trashedAt) continue
+        const relative = await workspaceRoot.resolve(before.handle).catch(() => null)
+        const path = relative?.join('/')
+        const indexed = path ? byPath.get(path) : undefined
+        if (!path || !indexed) continue
+        const next = renamedWorkspaceLinks(doc.md, paths, path, plan.target.path, plan.path)
+        if (path !== plan.target.path && !edits.has(path) && !next.changes.length) continue
+        if (await markdownHash(projectImportedImages(doc.md, true)) !== before.editorHash || before.diskHash !== indexed.source?.diskHash) {
+          throw new Error(`请先保存或同步「${path}」中的编辑，再重新预览。`)
+        }
+        const title = path === plan.target.path && doc.title === before.handle.name.replace(/\.(?:md|markdown)$/i, '')
+          ? plan.filename.replace(/\.(?:md|markdown)$/i, '') : doc.title
+        changes.push({ doc, before, path, md: next.markdown, title })
+      }
+      const newHandle = await commitWorkspaceRename(workspaceRoot, plan)
+      const renamed = new Map(changes.map((change) => [change.doc.id, change]))
+      const id = currentIdRef.current
+      const live = renamed.get(id)
+      for (const { doc, before, path, md } of changes) {
+        const handle = path === plan.target.path ? newHandle : before.handle
+        const indexed = byPath.get(path)!.source!
+        const edit = edits.get(path)
+        const diskHash = edit ? await markdownHash(serializeLocalMarkdown(edit.markdown, indexed.source)) : indexed.diskHash
+        rememberFile(doc.id, { ...before, handle, diskHash, editorHash: await markdownHash(projectImportedImages(md, true)) })
+      }
+      if (live && editor && !editor.isDestroyed) {
+        if (saveTimer.current !== null) window.clearTimeout(saveTimer.current)
+        titleRef.current = live.title
+        setTitle(live.title)
+        actions.setMarkdown(editor, live.md, true)
+        mdRef.current = actions.getMarkdown(editor)
+        scanIssues()
+      }
+      const synced = writeStore(docsRef.current.map((doc) => {
+        const change = renamed.get(doc.id)
+        return change ? { ...doc, md: change.md, title: change.title } : doc
+      }), id)
+      setRenameFile(undefined)
+      await workspace.refresh(workspaceRoot)
+      flash(synced ? `已重命名为「${plan.filename}」，并更新文件引用。` : '磁盘文件已重命名。请重新打开工作区文档，同步浏览器草稿。')
+    } finally {
+      if (editor && !editor.isDestroyed && editable) editor.setEditable(true, false)
+      localOperationRef.current = null
+    }
+  }
+
+  const openDocumentFolder = useCallback((forCurrentDocument = false) => {
+    const picker = localFilePickers()
+    if (!picker.showDirectoryPicker) {
+      if (forCurrentDocument) repairImages(true)
+      return
+    }
+    const id = currentIdRef.current
+    const linked = localFiles.get(id)
+    void picker.showDirectoryPicker({ mode: forCurrentDocument ? 'read' : 'readwrite' }).then(async (directory) => {
+      if (forCurrentDocument && linked) {
+        if (currentIdRef.current !== id) return
+        if ((await directory.resolve(linked.handle))?.length !== 1) {
+          flash('请选择当前 Markdown 文件所在的文件夹。')
+          return
+        }
+        rememberFile(id, { ...linked, directory })
+        await importFolderImages(id, directory)
+        if (currentIdRef.current === id) setIssuesHidden(false)
+        return
+      }
+      const documents: typeof folderDocuments = []
+      const readFolder = async (folder: LocalDirectoryHandle, subfolders: boolean) => {
+        for await (const entry of folder.values()) {
+          if (entry.kind === 'file' && /\.(?:md|markdown|txt)$/i.test(entry.name)) {
+            documents.push({ handle: entry as LocalFileHandle, directory: folder })
+          } else if (subfolders && entry.kind === 'directory' && !/^[._]|^assets?$/i.test(entry.name)) {
+            await readFolder(entry as LocalDirectoryHandle, false)
+          }
+        }
+      }
+      await readFolder(directory, true)
+      if (!documents.length) flash('所选文件夹内没有 Markdown 文档。')
+      else if (documents.length === 1) await openLocalMarkdown(documents[0].handle, documents[0].directory)
+      else setFolderDocuments(documents.sort((a, b) => a.handle.name.localeCompare(b.handle.name, 'zh')))
+    }).catch((error: unknown) => {
+      if (!(error instanceof DOMException && error.name === 'AbortError')) flash('无法读取文档文件夹。')
+    })
+  }, [flash, importFolderImages, localFiles, openLocalMarkdown, rememberFile, repairImages])
+
   /* ---------- 文件操作 ---------- */
-  const openMarkdownFile = useCallback(() => {
+  const openMarkdownFile = useCallback(async () => {
+    const picker = localFilePickers()
+    if (LOCAL_FILE_EDITING && picker.showOpenFilePicker && window.crypto?.subtle) {
+      try {
+        const [handle] = await picker.showOpenFilePicker({ types: markdownTypes })
+        if (!handle) return
+        await openLocalMarkdown(handle)
+        return
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'AbortError') return
+        const fallback = error instanceof DOMException && ['SecurityError', 'NotAllowedError'].includes(error.name)
+        if (!fallback) {
+          flash(error instanceof TypeError ? '无法读取文件。请选择 UTF-8 编码的 Markdown 文档。' : '无法读取本地文件。')
+          return
+        }
+      }
+    }
     actions.pickFile('.md,.markdown,.txt,text/markdown,text/plain', async (file) => {
-      // 防止把图片/压缩包当文本读进来（会把整篇文档变成乱码）
       const looksText = /\.(md|markdown|txt)$/i.test(file.name) || file.type.startsWith('text/')
       if (!looksText) {
-        window.alert('这个文件不是 Markdown 文本，请选择 .md 文件')
+        flash('请选择 Markdown 或纯文本文件。')
         return
       }
       let text: string
       try {
         text = await actions.readFileAsText(file)
       } catch (e) {
-        window.alert('这个文件读不出来：' + String(e).slice(0, 80))
+        flash('无法读取文件：' + String(e).slice(0, 80))
         return
       }
       if (text.includes('\u0000')) {
-        window.alert('这个文件不是纯文本（可能是图片或压缩包），请选择 .md 文件')
+        flash('请选择 Markdown 或纯文本文件。')
         return
       }
-      // 打开的文件作为一篇新文档加进来（不覆盖正在写的那篇）
-      const ed = editorRef.current
-      const currentMd = ed ? actions.getMarkdown(ed) : mdRef.current
-      const at = Date.now()
-      const saved = docsRef.current.map((d) =>
-        d.id === currentIdRef.current ? { ...d, title: titleRef.current, md: currentMd, at } : d,
-      )
-      const name = file.name.replace(/\.(md|markdown|txt)$/i, '')
-      const imported = { ...createDoc(name, text), md: text }
-      if (!writeStore([imported, ...saved], imported.id)) {
-        window.alert('打开失败：文档太大存不下（试试少放几张图片）')
-        return
-      }
-      titleRef.current = name
-      setTitle(name)
-      mdRef.current = text
-      setSavedAt(imported.at)
-      if (ed) {
-        const { fixedMath } = actions.setMarkdown(ed, text)
-        scanIssues()
-        scheduleSave()
-        if (fixedMath) flash(`导入时自动修好了 ${fixedMath} 个公式的写法问题`)
-      }
+      loadMarkdownFile(file.name, text)
     })
-  }, [flash, scanIssues, scheduleSave, writeStore])
+  }, [flash, loadMarkdownFile, openLocalMarkdown])
 
   /** 纯 .md 存档（备份 / 用别的软件读）。
    *  注意：图片是内嵌的，**拿去知乎导入会丢图** —— 它在「保存」菜单的最后一项，
@@ -683,27 +1291,177 @@ export default function ZhihuEditor() {
   const saveMarkdownFile = useCallback(() => {
     const md = currentMarkdown()
     const name = (titleRef.current.trim() || '文档') + '.md'
-    actions.downloadText(name, md, 'text/markdown;charset=utf-8')
+    actions.downloadText(name, projectImportedImages(md, false), 'text/markdown;charset=utf-8')
     persistDraft(md)
     flash(`已存一份「${name}」（图片内嵌，自己看 / 备份用）。要发知乎请用「保存 → 导出知乎用 .md」。`)
   }, [currentMarkdown, flash, persistDraft])
 
+  const runLocalFileAction = useCallback(async (id: string, action: () => Promise<void>, failure: string) => {
+    if (localOperationRef.current) return
+    localOperationRef.current = id
+    setLocalOperation(id)
+    setLocalConflictError('')
+    try {
+      await action()
+    } catch (error) {
+      if (currentIdRef.current === id && !(error instanceof DOMException && error.name === 'AbortError')) {
+        if (localConflict === id) setLocalConflictError(failure)
+        else flash(failure)
+      }
+    } finally {
+      localOperationRef.current = null
+      setLocalOperation(null)
+    }
+  }, [flash, localConflict])
+
+  const saveCurrentFile = useCallback(() => {
+    if (!localFilesReady) {
+      flash('正在读取本地文件关联。请稍后保存。')
+      return
+    }
+    const id = currentIdRef.current
+    const file = localFiles.get(id)
+    if (!file) {
+      saveMarkdownFile()
+      return
+    }
+    void runLocalFileAction(id, async () => {
+      const draft = currentMarkdown()
+      const md = projectImportedImages(draft, true)
+      persistDraft(draft)
+      const editorHash = await markdownHash(md)
+      const unchanged = editorHash === file.editorHash
+      const requestWrite = async () => {
+        if (await file.handle.requestPermission({ mode: 'readwrite' }) === 'granted') return true
+        if (currentIdRef.current === id) flash('原文件写入权限未授予。可从「保存」菜单另存 Markdown 副本。')
+        return false
+      }
+      let canWrite = false
+      let matches: boolean
+      try {
+        matches = await localFileMatches(file.handle, file.diskHash)
+      } catch (error) {
+        if (!(error instanceof DOMException) || error.name !== 'NotAllowedError') throw error
+        if (unchanged) {
+          if (currentIdRef.current === id) flash('当前没有需要写回的改动。')
+          return
+        }
+        canWrite = await requestWrite()
+        if (!canWrite) return
+        matches = await localFileMatches(file.handle, file.diskHash)
+      }
+      if (!matches) {
+        setLocalConflict(id)
+        return
+      }
+      if (unchanged) {
+        if (currentIdRef.current === id) flash('原文件已是最新版本。')
+        return
+      }
+      if (!canWrite && !await requestWrite()) return
+      const text = serializeLocalMarkdown(md, file.source)
+      const diskHash = await markdownHash(text)
+      if (!await writeLocalMarkdown(file.handle, text, file.diskHash)) {
+        setLocalConflict(id)
+        return
+      }
+      rememberFile(id, { ...file, editorHash, diskHash })
+      if (workspaceRoot && workspacePaths.has(id)) void workspace.refresh(workspaceRoot)
+      setLocalConflict((conflict) => conflict === id ? null : conflict)
+      if (currentIdRef.current === id) flash(`已保存到原文件「${file.handle.name}」。`)
+    }, '无法保存原文件。请确认文件仍可访问，或另存 Markdown 副本。')
+  }, [currentMarkdown, flash, localFiles, localFilesReady, persistDraft, rememberFile, runLocalFileAction, saveMarkdownFile,
+    workspace.refresh, workspacePaths, workspaceRoot])
+
+  const saveFileCopy = useCallback(() => {
+    const id = currentIdRef.current
+    const file = localFiles.get(id)
+    if (!file) return
+    void runLocalFileAction(id, async () => {
+      const md = projectImportedImages(currentMarkdown(), true)
+      const picker = localFilePickers()
+      const name = file.handle.name.replace(/\.(?:md|markdown|txt)$/i, '') + ' - 副本.md'
+      const target = picker.showSaveFilePicker
+        ? await picker.showSaveFilePicker({ types: markdownTypes, suggestedName: name }) : null
+      if (target && await target.isSameEntry(file.handle)) {
+        const message = '请选择与原文件不同的保存位置或文件名。'
+        if (localConflict === id) setLocalConflictError(message)
+        else flash(message)
+        return
+      }
+      let content: string | ArrayBuffer = serializeLocalMarkdown(md, file.source)
+      if (await markdownHash(md) === file.editorHash) {
+        try {
+          const original = await readLocalMarkdown(file.handle)
+          if (original.diskHash === file.diskHash) content = original.bytes
+        } catch {
+          // 原文件已不可读时，仍可使用编辑器中的内容另存。
+        }
+      }
+      if (target) {
+        await writeLocalMarkdown(target, content)
+      } else {
+        actions.downloadBlob(name, new Blob([content], { type: 'text/markdown;charset=utf-8' }))
+      }
+      setLocalConflict((conflict) => conflict === id ? null : conflict)
+      if (currentIdRef.current === id) flash(target ? `已另存「${target.name}」。` : '已下载 Markdown 副本。')
+    }, '无法另存 Markdown 副本。请检查保存位置和写入权限。')
+  }, [currentMarkdown, flash, localConflict, localFiles, runLocalFileAction])
+
+  const reloadLocalFile = useCallback(() => {
+    const id = currentIdRef.current
+    const file = localFiles.get(id)
+    if (!file) return
+    void runLocalFileAction(id, async () => {
+      const { markdown, source, diskHash } = await readLocalMarkdown(file.handle)
+      if (currentIdRef.current !== id) return
+      const snapshot = snapshotDocuments()
+      const previous = snapshot.find((doc) => doc.id === id && !doc.trashedAt)
+      if (!previous) return
+      const at = Date.now()
+      const content = { ...captureDocVersion(previous), md: markdown, at }
+      if (!writeStore(snapshot.map((doc) => doc.id === id ? content : doc), id)) {
+        setLocalConflictError('无法重新加载。请检查浏览器存储。')
+        return
+      }
+      if (saveTimer.current !== null) window.clearTimeout(saveTimer.current)
+      mdRef.current = markdown
+      setSavedAt(at)
+      const ed = editorRef.current
+      if (ed) {
+        actions.setMarkdown(ed, markdown)
+        scanIssues()
+      }
+      const canonical = currentMarkdown()
+      persistDraft(canonical)
+      rememberFile(id, { ...file, source, diskHash, editorHash: await markdownHash(canonical) })
+      if (file.directory) await importFolderImages(id, file.directory)
+      setLocalConflict((conflict) => conflict === id ? null : conflict)
+      if (currentIdRef.current === id) flash('已重新加载原文件。加载前的草稿已保留在版本历史中。')
+    }, '无法读取原文件。可将当前草稿另存为 Markdown 副本。')
+  }, [currentMarkdown, flash, importFolderImages, localFiles, persistDraft, rememberFile, runLocalFileAction, scanIssues, snapshotDocuments, writeStore])
+
   const exportHtmlFile = useCallback(async () => {
     const ed = editorRef.current
     if (!ed) return
-    const name = (titleRef.current.trim() || '文档') + '.html'
+    const title = titleRef.current
+    const name = (title.trim() || '文档') + '.html'
+    const body = actions.buildExportBody(ed, 'document', exportContentsTitle())
     /* 自己装的字体：≤4MB 就**嵌进这份网页**（别人电脑上也是这个字体）；
        超过上限就不嵌，并且**明说** —— 字体悄悄掉包是最容易被当成"导出坏了"的问题 */
     const font = await fontEmbedCss(typography.family)
+    const projected = LOCAL_FILE_EDITING ? await exportDiagrams(body, 'html') : { html: body, failed: 0 }
     actions.downloadText(
       name,
-      actions.buildStandaloneHtml(titleRef.current, actions.buildExportBody(ed), typography, {
+      actions.buildStandaloneHtml(title, projected.html, typography, {
         backgroundCss: pageBackgroundCss(pageBackground),
         fontFaceCss: font.css,
       }),
       'text/html;charset=utf-8',
     )
-    if (font.skipped === 'too-big') {
+    if (projected.failed) {
+      flash(`已导出「${name}」。${projected.failed} 个图表以源码保留。`)
+    } else if (font.skipped === 'too-big') {
       flash(
         `已存「${name}」。注意：你装的字体「${font.name}」有 ${formatSize(font.size)}，太大了没嵌进这份网页 —— ` +
           `在没装这个字体的电脑上会显示成默认字体。`,
@@ -711,20 +1469,80 @@ export default function ZhihuEditor() {
     } else {
       flash(font.name ? `已存「${name}」（把你装的字体「${font.name}」也嵌进去了）` : `已存「${name}」`)
     }
-  }, [typography, pageBackground, flash])
+  }, [typography, pageBackground, flash, exportContentsTitle])
 
   /** 「保存」按钮（工具栏和右下角那个都是它）点开选格式后走这里
    *  三种"图片一定显示得出来"的格式 + 一份纯 .md 备份（知乎用 .md / 网页 / PDF / 纯 .md） */
   const saveAs = useCallback(
     async (format: SaveFormat) => {
+      if (format === 'publication') {
+        setPublicationOpen(true)
+        return
+      }
+      if (format === 'local') {
+        saveCurrentFile()
+        return
+      }
+      if (format === 'copy') {
+        saveFileCopy()
+        return
+      }
       const ed = editorRef.current
       if (!ed) return
+      if (format === 'zip' && LOCAL_FILE_EDITING) {
+        flash('正在打包 Markdown 和图片…')
+        try {
+          const { blob, name, missing } = await packMarkdownAssets(ed, titleRef.current, localFiles.get(currentIdRef.current)?.directory)
+          actions.downloadBlob(name, blob)
+          flash(missing ? `已导出「${name}」。${missing} 张图片未找到，已保留原链接。` : `已导出「${name}」。`)
+        } catch { flash('无法生成 Markdown 资源包。') }
+        return
+      }
       if (format === 'html') {
         await exportHtmlFile()
         return
       }
       if (format === 'pdf') {
+        const snapshot = ed.state.doc
+        const diagrams = LOCAL_FILE_EDITING ? diagramsIn(snapshot) : []
+        if (diagrams.length) {
+          await Promise.all(diagrams.map(({ source }) => loadDiagram(source)))
+          // 等待图表的 React 节点视图和 SVG 图片同步到打印页面。
+          await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
+          if (ed.isDestroyed || editorRef.current !== ed || ed.state.doc !== snapshot) {
+            flash('文档内容已更新。请重新导出 PDF。')
+            return
+          }
+          await Promise.all([...ed.view.dom.querySelectorAll<HTMLImageElement>('.zh-diagram img')].map((img) => img.decode().catch(() => {})))
+          if (ed.isDestroyed || editorRef.current !== ed || ed.state.doc !== snapshot) return
+        }
         window.print()
+        return
+      }
+      if (format === 'docx' && LOCAL_FILE_EDITING) {
+        if (exportingWord.current) return
+        exportingWord.current = true
+        const title = titleRef.current.trim()
+        const name = (title || '未命名文档') + '.docx'
+        const directory = localFiles.get(currentIdRef.current)?.directory
+        flash('正在生成 Word 文档…')
+        try {
+          const { html, failed } = await exportDiagrams(actions.buildExportBody(ed, 'document', exportContentsTitle()), 'docx')
+          const { buildWordDocument } = await import('./publication/exportWord')
+          const result = await buildWordDocument(title, html, directory ? (src) => findAssetFile(directory, src) : undefined, publication)
+          actions.downloadBlob(name, result.blob)
+          const notices = [
+            result.missingImages && `${result.missingImages} 张图片未能嵌入`,
+            result.formulaWarnings && `${result.formulaWarnings} 个公式需要核对`,
+            result.videos && `${result.videos} 个视频以链接导出`,
+            failed && `${failed} 个图表以源码保留`,
+          ].filter(Boolean)
+          flash(`已导出「${name}」${notices.length ? '。' + notices.join('，') : ''}。`)
+        } catch {
+          flash('无法生成 Word 文档。请重试。')
+        } finally {
+          exportingWord.current = false
+        }
         return
       }
       if (format === 'plain') {
@@ -732,7 +1550,7 @@ export default function ZhihuEditor() {
         return
       }
       // 知乎用 .md：可能要先上传图片，过程中给提示；拿不到网址时它自己会拦住并说明怎么办
-      flash('正在准备给知乎的 .md（图片会自动上传换网址）…')
+      flash('正在准备知乎 Markdown 文件…')
       try {
         const out = await exportZhihuMarkdown(ed, titleRef.current, { onPhase: (t) => t && flash(t) })
         flash(out.text)
@@ -741,8 +1559,55 @@ export default function ZhihuEditor() {
         flash('导出出错：' + String(e).slice(0, 120))
       }
     },
-    [exportHtmlFile, flash, saveMarkdownFile, scheduleSave],
+    [exportHtmlFile, exportContentsTitle, flash, localFiles, publication, saveCurrentFile, saveFileCopy, saveMarkdownFile, scheduleSave],
   )
+
+  const reviewExport = useCallback((target: ExportTarget = 'docx') => {
+    const instance = editorRef.current
+    if (instance && !instance.isDestroyed) setExportReview({ target, issues: checkExport(instance, target) })
+  }, [])
+
+  const requestSave = useCallback((format: SaveFormat) => {
+    const instance = editorRef.current
+    if (LOCAL_FILE_EDITING && instance && !instance.isDestroyed && (format === 'editions' ||
+      ((format === 'docx' || format === 'pdf' || format === 'zhihu') && hasEditionBlocks(instance.state.doc)))) {
+      setEditionRequest({
+        doc: instance.state.doc, title: titleRef.current, format: format === 'editions' ? undefined : format,
+        contents: exportContentsTitle() !== undefined, directory: localFiles.get(currentIdRef.current)?.directory,
+      })
+      return
+    }
+    if (LOCAL_FILE_EDITING && instance && (format === 'docx' || format === 'pdf' || format === 'zhihu')) {
+      const issues = checkExport(instance, format)
+      if (issues.length) {
+        setExportReview({ target: format, issues, resume: format })
+        return
+      }
+    }
+    void saveAs(format)
+  }, [exportContentsTitle, localFiles, saveAs])
+
+  const toggleReading = useCallback(() => {
+    if (localOperation || (editorRef.current && !editorRef.current.isEditable && !reading)) return
+    if (!reading) {
+      setDocsOpen(false)
+      setTypographyOpen(false)
+      setEffectOpen(false)
+    }
+    setReading(!reading)
+  }, [localOperation, reading])
+
+  useLayoutEffect(() => {
+    if (!reading || !editor || editor.isDestroyed) return
+    const wasEditable = editor.isEditable
+    editor.view.dispatch(editor.state.tr.setMeta(readingModeKey, true))
+    editor.setEditable(false, false)
+    return () => {
+      if (editor.isDestroyed) return
+      editor.view.dispatch(editor.state.tr.setMeta(readingModeKey, false))
+      editor.setEditable(wasEditable, false)
+    }
+  }, [editor, reading])
 
   /* ---------- 视图：Markdown 输入开关（开=语法自动转换，关=原样输入） ---------- */
   const toggleMarkdownInput = useCallback(() => {
@@ -783,7 +1648,7 @@ export default function ZhihuEditor() {
           const instance = ed()
           if (!instance) return
           if (file.size > actions.MAX_IMAGE_FILE) {
-            window.alert('图片超过 12MB，先压缩一下再插入吧')
+            window.alert('图片大小超过 12 MB。请压缩后重新插入。')
             return
           }
           try {
@@ -791,7 +1656,7 @@ export default function ZhihuEditor() {
             actions.insertImage(instance, url, file.name)
           } catch (e) {
             // 读不出来要说一声，别让用户以为"点了没反应"
-            window.alert('这张图片没能读进来：' + String(e).slice(0, 80))
+            window.alert('无法读取图片：' + String(e).slice(0, 80))
           }
         })
       },
@@ -812,7 +1677,7 @@ export default function ZhihuEditor() {
       openMarkdownFile,
       saveMarkdownFile,
       exportHtmlFile,
-      exportPdf: () => actions.printDocument(),
+      exportPdf: () => requestSave('pdf'),
       toggleMarkdownInput,
       toggleOutline: () => setOutlineOpen((v) => !v),
       toggleFullscreen: () => actions.toggleFullscreen(),
@@ -836,6 +1701,7 @@ export default function ZhihuEditor() {
     editor,
     openMarkdownFile,
     persistDraft,
+    requestSave,
     saveMarkdownFile,
     // theme 必须在这里：菜单里的对号靠 api.theme 判断，
     // 漏了它就会出现"切到深色、勾还留在浅色/跟随系统"（实测踩过）
@@ -871,7 +1737,7 @@ export default function ZhihuEditor() {
       link: () => api.openLink(),
       image: () => api.pickImage(),
       video: () => api.openVideo(),
-      save: () => api.saveMarkdownFile(),
+      save: saveCurrentFile,
       open: () => api.openMarkdownFile(),
       exportPdf: () => api.exportPdf(),
       exportHtml: () => api.exportHtmlFile(),
@@ -880,6 +1746,9 @@ export default function ZhihuEditor() {
       markdownInput: () => api.toggleMarkdownInput(),
       outline: () => api.toggleOutline(),
       fullscreen: () => api.toggleFullscreen(),
+      toolbarOrb: () => window.dispatchEvent(new Event(TOOLBAR_ORB_REVEAL_EVENT)),
+      tools: () => window.dispatchEvent(new Event(TOOLBAR_TOOLS_EVENT)),
+      readingMode: toggleReading,
       shortcuts: () => setShortcutsOpen(true),
     })
   })
@@ -890,6 +1759,17 @@ export default function ZhihuEditor() {
       if (shortcutsOpen) return
       if (document.querySelector('.zh-modal-mask')) return
 
+      const key = normalizeEvent(e)
+      const id = key ? shortcuts.match(key) : null
+      if (reading && (e.key === 'Escape' || id === 'readingMode')) {
+        e.preventDefault()
+        e.stopPropagation()
+        if (!e.repeat) toggleReading()
+        return
+      }
+      if (reading) return
+      if (e.target instanceof HTMLElement && e.target.closest('.zh-command-search') && id !== 'tools') return
+
       // Ctrl+F / Cmd+F：打开我们自己的搜索
       // （浏览器自带的"查找"在编辑器里找不到公式、代码块这些块内容，也没法把命中滚到视野中间）
       if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && (e.key === 'f' || e.key === 'F')) {
@@ -899,10 +1779,8 @@ export default function ZhihuEditor() {
         return
       }
 
-      const key = normalizeEvent(e)
       if (!key) return
 
-      const id = shortcuts.match(key)
       if (id) {
         const action = SHORTCUT_ACTIONS.find((a) => a.id === id)
         const target = e.target as HTMLElement | null
@@ -912,7 +1790,7 @@ export default function ZhihuEditor() {
         if (action?.group === '编辑' && inPlainInput) return
         e.preventDefault()
         e.stopPropagation()
-        shortcuts.run(id)
+        if ((id !== 'readingMode' && id !== 'tools') || !e.repeat) shortcuts.run(id)
         return
       }
 
@@ -924,7 +1802,7 @@ export default function ZhihuEditor() {
     }
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
-  }, [shortcutsOpen])
+  }, [reading, shortcutsOpen, toggleReading])
 
   const handlers: ToolbarHandlers = useMemo(
     () => ({
@@ -942,9 +1820,41 @@ export default function ZhihuEditor() {
       openZhihu: () => setZhihuOpen(true),
       pickImage: () => api.pickImage(),
       checkDocument,
+      openDocumentFolder: LOCAL_FILE_EDITING && localFilePickers().showDirectoryPicker ? () => openDocumentFolder() : undefined,
+      openWorkspace: LOCAL_FILE_EDITING && localFilePickers().showDirectoryPicker
+        ? () => workspaceRoot ? workspace.setVisible((visible) => !visible) : workspace.choose() : undefined,
+      openMarkdownSource: LOCAL_FILE_EDITING ? openMarkdownSource : undefined,
+      toggleWritingFocus: LOCAL_FILE_EDITING ? () => setWritingFocus((value) => !value) : undefined,
+      toggleReadingMode: LOCAL_FILE_EDITING ? toggleReading : undefined,
+      markEditionBlock: LOCAL_FILE_EDITING ? () => setEditionBlockPicker(true) : undefined,
+      openEquationTools: LOCAL_FILE_EDITING ? () => setEquationToolsOpen(true) : undefined,
+      openObjectTools: LOCAL_FILE_EDITING ? () => setObjectToolsOpen(true) : undefined,
+      openAssetManager: LOCAL_FILE_EDITING ? () => setAssetDocumentId(currentIdRef.current) : undefined,
+      openScholarTools: LOCAL_FILE_EDITING ? setScholarTab : undefined,
+      openMacroDefinitions: LOCAL_FILE_EDITING ? () => {
+        const instance = editorRef.current
+        if (!instance) return
+        const existing = documentMacros(instance.state.doc).positions[0]
+        if (existing !== undefined) { actions.gotoPos(instance, existing); return }
+        const first = instance.state.doc.firstChild
+        const at = first?.type.name === 'heading' ? first.nodeSize : 0
+        instance.chain().insertContentAt(at, {
+          type: 'codeBlock', attrs: { language: MACRO_LANGUAGE },
+          content: [{ type: 'text', text: '\\newcommand{\\RealSet}{\\mathbb{R}}' }],
+        }).setTextSelection(at + 1).focus().scrollIntoView().run()
+      } : undefined,
+      insertMermaidDiagram: LOCAL_FILE_EDITING ? () => {
+        editorRef.current?.chain().focus().insertContent({
+          type: 'codeBlock', attrs: { language: MERMAID_LANGUAGE },
+          content: [{ type: 'text', text: MERMAID_SAMPLE }],
+        }).run()
+      } : undefined,
+      openExportPreflight: LOCAL_FILE_EDITING ? () => reviewExport() : undefined,
+      writingFocus,
       exportMathDiag,
     }),
-    [api, checkDocument, exportMathDiag],
+    [api, checkDocument, exportMathDiag, openDocumentFolder, openMarkdownSource, reviewExport, workspace.choose,
+      workspace.setVisible, workspaceRoot, writingFocus, toggleReading],
   )
 
   const confirmMath = useCallback(
@@ -966,19 +1876,34 @@ export default function ZhihuEditor() {
   )
 
   return (
-    <div className="editor-page">
+    <div className="editor-page" data-reading={reading || undefined} data-effect-ui={LOCAL_FILE_EDITING || undefined}>
+      {reading && <button className="zh-reading-exit" type="button" onClick={toggleReading} title="退出阅读模式（Esc）">退出阅读模式</button>}
+      {LOCAL_FILE_EDITING && publication.preset !== 'default' && <style media="print">{printPublicationCss(publication, title)}</style>}
       <Toolbar
         api={api}
         handlers={handlers}
+        panelsOpen={docsOpen || typographyOpen || effectOpen}
+        onDismissPanels={() => {
+          setDocsOpen(false)
+          setTypographyOpen(false)
+          setEffectOpen(false)
+        }}
         extraLeading={
           <DocMenu
-            docs={docs}
+            docs={activeDocs}
+            trashed={docs.filter((doc) => doc.trashedAt)}
             currentId={currentId}
             open={docsOpen}
             onOpenChange={setDocsOpen}
             onSwitch={switchDoc}
             onCreate={createDocument}
             onDelete={deleteDocument}
+            onRestoreTrashed={restoreTrashedDocument}
+            onSaveVersion={saveVersion}
+            onRestoreVersion={restoreVersion}
+            onCompareVersion={LOCAL_FILE_EDITING ? compareVersion : undefined}
+            onBackup={backupDocuments}
+            onRestore={restoreDocuments}
           />
         }
         typographyMenu={
@@ -996,15 +1921,31 @@ export default function ZhihuEditor() {
             onPageBackgroundChange={setPageBackground}
           />
         }
-        saveMenu={<SaveMenu onPick={saveAs} />}
+        effectPanel={
+          // 纯净版构建里这个常量是 true，特效面板（连同特效代码）都不会出现
+          __NO_MOUSE_EFFECT__ ? null : (
+            <EffectPanel
+              documentId={currentId}
+              open={effectOpen}
+              onOpenChange={setEffectOpen}
+              settings={effect}
+              onChange={setEffect}
+              onReset={() => setEffect(resetMouseEffectSettings())}
+            />
+          )
+        }
+        saveMenu={<SaveMenu onPick={requestSave} localFileName={localFile?.handle.name} />}
+        onOpenEffects={() => setEffectOpen(true)}
+        onSaveAction={requestSave}
+        hasLocalFile={Boolean(localFile)}
       />
 
       {/* 文档体检提示条：图片打不开 / 公式渲染不出来时自己浮出来 */}
       {fixNote ? (
         <div className="zh-fixbar zh-fixbar--ok">
-          <span className="zh-fixbar__text">{fixNote}</span>
+          <span className="zh-fixbar__text" role="status">{fixNote}</span>
           <span className="zh-fixbar__spacer" />
-          <button type="button" className="zh-fixbar__close" title="知道了" onClick={() => setFixNote(null)}>
+          <button type="button" className="zh-fixbar__close" title="关闭提示" onClick={() => setFixNote(null)}>
             ✕
           </button>
         </div>
@@ -1015,16 +1956,15 @@ export default function ZhihuEditor() {
             {issues.images > 0 && (
               <>
                 <span className="zh-fixbar__text">
-                  🖼 有 <b>{issues.images}</b> 张图片打不开：源文件里写的是 assets/… 这种相对路径，
-                  而单独打开的网页读不到旁边的文件夹
+                  有 <b>{issues.images}</b> 张本地图片待导入。可选择 Markdown 所在的文件夹。
                 </span>
                 <button
                   type="button"
                   className="zh-pill zh-pill--primary"
                   title="修复图片：选导出文件夹"
-                  onClick={() => repairImages(true)}
+                  onClick={() => localFile ? openDocumentFolder(true) : repairImages(true)}
                 >
-                  选导出文件夹修复
+                  加载资源文件夹
                 </button>
                 <button
                   type="button"
@@ -1039,18 +1979,20 @@ export default function ZhihuEditor() {
             {issues.math > 0 && (
               <>
                 <span className="zh-fixbar__text">
-                  ✏️ 有 <b>{issues.math}</b> 个公式的写法有问题（源文件里的转义/实体不对）
-                  {issues.mathHard > 0 && <>，其中 <b>{issues.mathHard}</b> 个得手动改</>}
+                  <b>{issues.math}</b> 个公式需要修复
+                  {issues.mathHard > 0 && <>，其中 <b>{issues.mathHard}</b> 个需要手动编辑</>}
                 </span>
-                <button type="button" className="zh-pill zh-pill--primary" title="一键修复公式" onClick={fixMath}>
-                  一键修复公式
-                </button>
+                {issues.math > issues.mathHard && (
+                  <button type="button" className="zh-pill zh-pill--primary" title="一键修复公式" onClick={fixMath}>
+                    一键修复公式
+                  </button>
+                )}
               </>
             )}
             {issues.raw > 0 && (
               <>
                 <span className="zh-fixbar__text">
-                  📄 有 <b>{issues.raw}</b> 处公式还是原文（粘贴进来的 `$…$` 没被识别成公式）
+                  📄 有 <b>{issues.raw}</b> 处公式文本尚未转换
                 </span>
                 <button type="button" className="zh-pill zh-pill--primary" title="把原文公式转成公式" onClick={fixRawMath}>
                   转成公式
@@ -1061,7 +2003,7 @@ export default function ZhihuEditor() {
             <button
               type="button"
               className="zh-fixbar__close"
-              title="先不管"
+              title="关闭提示"
               onClick={() => setIssuesHidden(true)}
             >
               ✕
@@ -1070,28 +2012,44 @@ export default function ZhihuEditor() {
         )
       )}
 
-      <div className="editor-shell">
-        <div className="editor-card">          <input
+      <div className={`editor-shell${!reading && workspace.visible && workspaceRoot ? ' editor-shell--workspace' : ''}`}>
+        {workspace.visible && workspaceRoot && <WorkspacePanel name={workspaceRoot.name} files={workspace.files}
+          editor={editor} drafts={workspaceDrafts} onOpenResult={(result) => void openWorkspaceResult(result)}
+          active={activeWorkspaceFile} status={workspace.status} backlinks={backlinks} onOpen={(file) => void openWorkspaceFile(file)}
+          onChoose={workspace.choose} onReconnect={workspace.reconnect} onRefresh={() => void workspace.refresh(workspaceRoot)}
+          onClose={() => workspace.setVisible(false)} onRename={setRenameFile} autoAssets={autoAssets}
+          onAutoAssets={(enabled) => {
+            setAutoAssets(enabled)
+            try { localStorage.setItem('dadealbit-auto-assets', enabled ? 'on' : 'off') } catch { /* 当前会话仍可使用。 */ }
+          }} />}
+        <div className="editor-card" data-writing-focus={!reading && writingFocus || undefined}>
+          <input
             className="zh-title"
             value={title}
+            readOnly={reading}
             maxLength={100}
             placeholder="请输入标题（最多 100 个字）"
             onChange={(e) => {
+              if (reading) return
               titleRef.current = e.target.value
               setTitle(e.target.value)
               scheduleSave()
             }}
           />
+          {includeContents && editor && <PrintContents editor={editor} title={title} />}
           <div className="zh-editor-body">
             <EditorContent editor={editor} />
+            {LOCAL_FILE_EDITING && editor && <ScholarBibliography editor={editor} />}
           </div>
         </div>
 
         {/* 光标进表格时，表格上方浮出加行 / 加列 / 删除等操作 */}
-        <TableMenu editor={editor} />
-        <ImageMenu editor={editor} />
+        {!reading && <TableMenu editor={editor} />}
+        {!reading && <ImageMenu editor={editor} />}
 
-        {outlineOpen && (
+        {outlineOpen && LOCAL_FILE_EDITING && editor && <ChapterOutline editor={editor} includeContents={includeContents}
+          onContentsChange={(enabled) => setDocumentOption('exportContents', enabled)} onClose={() => setOutlineOpen(false)} />}
+        {outlineOpen && !LOCAL_FILE_EDITING && (
           <aside className="zh-outline">
             <div className="zh-outline__head">
               <span>大纲</span>
@@ -1100,7 +2058,7 @@ export default function ZhihuEditor() {
               </button>
             </div>
             {outline.length === 0 ? (
-              <div className="zh-outline__empty">还没有标题</div>
+              <div className="zh-outline__empty">当前文档无标题</div>
             ) : (
               outline.map((item) => (
                 <button
@@ -1126,12 +2084,123 @@ export default function ZhihuEditor() {
         savedAt={savedAt}
         outlineOpen={outlineOpen}
         saveFailed={saveFailed}
+        localFileName={localFile?.handle.name}
+        localFileStatus={localOperation === currentId ? '正在处理本地文件'
+          : diskStatus?.file === localFile && diskStatus?.id === currentId && diskStatus.md === storedMarkdown && diskStatus.saved
+            ? '已保存到原文件' : '原文件有待保存的改动'}
         onToggleMarkdownInput={toggleMarkdownInput}
-        onExport={saveAs}
+        onExport={requestSave}
       />
+
+      {sourceEdit && <MarkdownSourceModal initial={sourceEdit.initial} onPreview={previewSource} onReview={checkSource}
+        onApply={applyMarkdownSource} onSave={saveCurrentFile}
+        onClose={() => {
+          setSourceEdit(null)
+          requestAnimationFrame(() => {
+            if (!document.querySelector('.zh-modal-mask')) editorRef.current?.commands.focus()
+          })
+        }} />}
+
+      {assetDocumentId === currentId && editor && !reading && <DocumentAssetsModal key={assetDocumentId}
+        editor={editor} scope={assetScope} canApply={() => currentIdRef.current === assetDocumentId}
+        onClose={() => setAssetDocumentId(undefined)} onApplied={(count) => {
+          setAssetDocumentId(undefined)
+          scheduleSave()
+          scanIssues()
+          flash(`已修复 ${count} 处素材引用。`)
+        }} />}
+      {renameFile && <WorkspaceRenameModal file={renameFile} files={workspace.files} onCommit={renameWorkspaceFile}
+        onClose={() => setRenameFile(undefined)} />}
+      {publicationOpen && <PublicationLayoutModal initial={publication} onClose={() => setPublicationOpen(false)} onApply={(layout) => {
+        savePublicationLayout(layout)
+        setPublication(layout)
+        setPublicationOpen(false)
+        flash('已更新 Word 与 PDF 的排版设置。')
+      }} />}
+
+      {equationToolsOpen && editor && <EquationToolsModal editor={editor} automatic={numberEquations}
+        onToggle={(enabled) => setDocumentOption('numberEquations', enabled)} onClose={() => setEquationToolsOpen(false)}
+        onJump={(pos) => {
+          setEquationToolsOpen(false)
+          gotoEquation(editor, pos)
+        }}
+        onInsert={(pos) => {
+          if (!insertEquationReference(editor, pos)) return
+          setEquationToolsOpen(false)
+          scheduleSave()
+        }} />}
+
+      {objectToolsOpen && editor && <ObjectToolsModal editor={editor} onClose={() => setObjectToolsOpen(false)} />}
+      {editionBlockPicker && editor && <EditionBlockPicker onClose={() => setEditionBlockPicker(false)} onPick={(kind) => {
+        setEditionBlockPicker(false)
+        if (!insertEditionBlock(editor, kind)) flash('无法标记所选内容。请选择完整的正文段落。')
+      }} />}
+      {editionRequest && editor && <EditionModal editor={editor} request={editionRequest} typography={typography}
+        publication={publication} onFeedback={flash} onClose={() => setEditionRequest(null)} />}
+      {scholarTab && editor && <ScholarTools key={scholarTab} editor={editor} tab={scholarTab} onClose={() => setScholarTab(null)} />}
+      {comparison && <VersionCompareModal comparison={comparison} feedback={compareFeedback}
+        onRestore={restoreVersionChange} onClose={() => setComparison(null)} />}
+
+      {exportReview && editor && <ExportPreflightModal review={exportReview}
+        onTarget={exportReview.resume ? undefined : reviewExport}
+        onClose={() => setExportReview(null)}
+        onLocate={(pos) => {
+          setExportReview(null)
+          gotoDocumentNode(editor, pos)
+        }}
+        onContinue={exportReview.resume ? () => {
+          const format = exportReview.resume
+          setExportReview(null)
+          if (format) {
+            if (format === 'pdf') requestAnimationFrame(() => void saveAs(format))
+            else void saveAs(format)
+          }
+        } : undefined} />}
+
+      {folderDocuments.length > 0 && (
+        <div className="zh-modal-mask" onKeyDown={(event) => {
+          if (event.key === 'Escape') setFolderDocuments([])
+        }}>
+          <div className="zh-modal" role="dialog" aria-modal="true" aria-label="选择要打开的文档">
+            <div className="zh-modal__head">选择要打开的文档</div>
+            <div className="zh-modal__body zh-local-documents">
+              {folderDocuments.map(({ handle, directory }, index) => (
+                <button type="button" className="zh-btn-plain" key={index} autoFocus={index === 0} onClick={() => {
+                  setFolderDocuments([])
+                  void openLocalMarkdown(handle, directory).catch(() => flash('无法读取本地文档。'))
+                }}>{handle.name}</button>
+              ))}
+            </div>
+            <div className="zh-modal__footer">
+              <button type="button" className="zh-btn-plain" onClick={() => setFolderDocuments([])}>取消</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {localConflict === currentId && localFile && (
+        <div className="zh-modal-mask" onKeyDown={(event) => {
+          if (event.key === 'Escape' && !localOperation) setLocalConflict(null)
+        }}>
+          <div className="zh-modal" role="alertdialog" aria-modal="true" aria-labelledby="zh-local-conflict-title">
+            <div className="zh-modal__head" id="zh-local-conflict-title">原文件已在外部修改</div>
+            <div className="zh-modal__body">
+              <p>「{localFile.handle.name}」与打开时的内容不同。</p>
+              <p>重新加载会把当前草稿保留到版本历史。也可将当前内容另存为副本。</p>
+              {localConflictError && <p role="alert">{localConflictError}</p>}
+            </div>
+            <div className="zh-modal__footer">
+              <button type="button" className="zh-btn-plain" autoFocus disabled={!!localOperation} onClick={() => setLocalConflict(null)}>取消</button>
+              <button type="button" className="zh-btn-plain" disabled={!!localOperation} onClick={saveFileCopy}>另存副本</button>
+              <button type="button" className="zh-btn-solid" disabled={!!localOperation} onClick={reloadLocalFile}>重新加载原文件</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <MathModal
         open={mathOpen}
+        macros={mathOpen && editor ? documentMacros(editor.state.doc).macros : undefined}
         initialLatex={mathSeed.latex}
         initialDisplay={mathSeed.display}
         onClose={() => setMathOpen(false)}
@@ -1162,7 +2231,8 @@ export default function ZhihuEditor() {
           setShortcutsOpen(true)
         }}
       />
-      <SearchBox editor={editor} open={searchOpen} onClose={() => setSearchOpen(false)} />
+      <SearchBox editor={editor} open={searchOpen} docs={activeDocs} currentId={currentId} onSwitch={switchDoc}
+        onClose={() => setSearchOpen(false)} />
       <FeedbackModal
         open={feedbackOpen}
         onClose={() => setFeedbackOpen(false)}

@@ -61,17 +61,19 @@ const skipSpace = (md: string, i: number): number => {
 function titleEndAt(md: string, spaceAt: number): number {
   const t = skipSpace(md, spaceAt)
   const quote = md[t]
-  if (quote === '"' || quote === "'") {
-    const close = md.indexOf(quote, t + 1)
-    if (close < 0) return -1
-    const after = skipSpace(md, close + 1)
-    return md[after] === ')' ? after : -1
-  }
-  if (quote === '(') {
-    const close = md.indexOf(')', t + 1)
-    if (close < 0) return -1
-    const after = skipSpace(md, close + 1)
-    return md[after] === ')' ? after : -1
+  if (quote !== '"' && quote !== "'" && quote !== '(') return -1
+  const closing = quote === '(' ? ')' : quote
+  for (let i = t + 1; i < md.length; i += 1) {
+    const c = md[i]
+    if (c === '\n' || c === '\r') return -1
+    if (c === '\\' && (md[i + 1] === closing || md[i + 1] === '\\')) {
+      i += 1
+      continue
+    }
+    if (c === closing) {
+      const after = skipSpace(md, i + 1)
+      return md[after] === ')' ? after : -1
+    }
   }
   return -1
 }

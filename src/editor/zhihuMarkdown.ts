@@ -13,6 +13,8 @@
  */
 
 import { codeMask } from './tiptap/mathMarkdown'
+import { looksLikeLatex } from './math/rawMathText'
+import { equationNumberText, type createEquationExportResolver } from './math/equationIndex'
 
 /** 单个公式 → 知乎的公式标记 */
 export function formulaImgTag(latex: string, display: boolean): string {
@@ -106,9 +108,9 @@ export function looksLikeFormula(s: string): boolean {
   const t = s.trim()
   if (!t || t.length > 800) return false
   // 必须有 LaTeX 命令（\frac \times \left …）或上下标/花括号，且不能像句子
-  if (!/\\[a-zA-Z]+|[\^_{}]/.test(t)) return false
+  if (!/\\[a-zA-Z]+|[\^_{}=<>]/.test(t) && !/^(?:[a-z]\s*,\s*)+[a-z]$/i.test(t)) return false
   if (/[。！？；：、“”‘’《》（）【】]/.test(t)) return false
-  return true
+  return looksLikeLatex(t)
 }
 
 /**
@@ -121,7 +123,7 @@ export function looksLikeFormula(s: string): boolean {
  *     `\$\frac…\$` 这种形态 —— 只要内容明显是 LaTeX，就照样转成公式标记，
  *     否则用户在知乎里看到的会是一堆反斜杠乱码。
  */
-export function mdToZhihuMarkdown(input: string): ZhihuMarkdownResult {
+export function mdToZhihuMarkdown(input: string, resolveEquation?: ReturnType<typeof createEquationExportResolver>): ZhihuMarkdownResult {
   // 先把"导出工具塞的元数据开头"扔掉（那是 title/author/tags/url，不是正文）
   const md = stripExporterHeader(input)
   let out = ''
@@ -129,6 +131,18 @@ export function mdToZhihuMarkdown(input: string): ZhihuMarkdownResult {
   let formulas = 0
   // 代码块 / 行内代码里的 `$` 是代码，不转换
   const inCode = codeMask(md)
+  const renderFormula = (source: string, display: boolean) => {
+    const math = resolveEquation?.(source, display)
+    const safeText = (value: string) => value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    if (math?.ref) {
+      return safeText(equationNumberText(math.target?.number ?? '??', math.ref.parentheses))
+    }
+    const equation = math?.latex ?? source
+    if (!equation) return ''
+    formulas += 1
+    const number = math?.number ? '\n\n' + safeText(equationNumberText(math.number, math.parentheses)) : ''
+    return formulaImgTag(equation, display) + number
+  }
 
   while (i < md.length) {
     const ch = md[i]
@@ -165,8 +179,7 @@ export function mdToZhihuMarkdown(input: string): ZhihuMarkdownResult {
       if (end > i) {
         const latex = md.slice(i + 2, end).trim()
         if (latex) {
-          out += `\n\n${formulaImgTag(latex, true)}\n\n`
-          formulas += 1
+          out += `\n\n${renderFormula(latex, true)}\n\n`
           i = end + 2
           continue
         }
@@ -181,8 +194,7 @@ export function mdToZhihuMarkdown(input: string): ZhihuMarkdownResult {
     if (end > i && (lineEnd < 0 || end < lineEnd)) {
       const latex = md.slice(i + 1, end)
       if (latex.trim()) {
-        out += formulaImgTag(latex.trim(), false)
-        formulas += 1
+        out += renderFormula(latex.trim(), false)
         i = end + 1
         continue
       }

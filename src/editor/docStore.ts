@@ -15,11 +15,14 @@
  * 注意：库名/键名一旦发布就不能改，改了用户已有的文档就找不回来了。
  */
 import type { Doc, DocStore } from './documents'
+import type { LocalDirectoryHandle, LocalMarkdownFile } from './localMarkdownFile'
 
 const DB_NAME = 'md-editor-docs'
 const DB_VERSION = 1
 const DOCS = 'docs'
 const META = 'meta'
+const LOCAL_MARKDOWN = 'local-markdown:'
+const WORKSPACE = 'markdown-workspace'
 
 /**
  * 复用一个数据库连接。
@@ -81,7 +84,7 @@ function tx<T>(mode: IDBTransactionMode, run: (t: IDBTransaction) => Promise<T> 
         const t = db.transaction([DOCS, META], mode)
         // ⚠️ run() 异步 reject 时必须把外层 promise 一起 reject 掉：
         // 否则事务可能既不 complete 也不 error，这个 promise 永远不 settle（initDocStore 直接挂住）
-        Promise.resolve(run(t)).then(
+        Promise.resolve().then(() => run(t)).then(
           (r) => {
             result = r
           },
@@ -107,17 +110,40 @@ const wrap = <T>(req: IDBRequest<T>) =>
     req.onerror = () => reject(req.error)
   })
 
+export async function loadLocalMarkdownFiles(): Promise<Map<string, LocalMarkdownFile>> {
+  const range = IDBKeyRange.bound(LOCAL_MARKDOWN, LOCAL_MARKDOWN + '\uffff')
+  const records = await tx('readonly', (t) => wrap(t.objectStore(META).getAll(range)))
+  return new Map(records.map(({ k, v }) => [k.slice(LOCAL_MARKDOWN.length), v]))
+}
+
+export function storeLocalMarkdownFile(id: string, file: LocalMarkdownFile): Promise<void> {
+  return tx('readwrite', (t) => { t.objectStore(META).put({ k: LOCAL_MARKDOWN + id, v: file }) })
+}
+
+export async function loadWorkspace(): Promise<LocalDirectoryHandle | undefined> {
+  const entry = await tx('readonly', (t) => wrap(t.objectStore(META).get(WORKSPACE)))
+  return entry?.v
+}
+
+export function storeWorkspace(directory: LocalDirectoryHandle): Promise<void> {
+  return tx('readwrite', (t) => { t.objectStore(META).put({ k: WORKSPACE, v: directory }) })
+}
+
+async function readStore(t: IDBTransaction): Promise<DocStore | null> {
+  const [docs, cur] = await Promise.all([
+    wrap(t.objectStore(DOCS).getAll()) as Promise<Doc[]>,
+    wrap(t.objectStore(META).get('currentId')) as Promise<{ k: string; v: string } | undefined>,
+  ])
+  const valid = docs.filter((d) => d && typeof d.md === 'string')
+  if (!valid.length) return null
+  const currentId = valid.some((d) => d.id === cur?.v && !d.trashedAt)
+    ? String(cur?.v) : (valid.find((d) => !d.trashedAt) ?? valid[0]).id
+  return { docs: valid, currentId }
+}
+
 /** 读出全部文档 + 当前文档 id；库里是空的就返回 null（调用方据此决定要不要迁移） */
 export async function idbLoadAll(): Promise<DocStore | null> {
-  return tx('readonly', async (t) => {
-    const docs = (await wrap(t.objectStore(DOCS).getAll())) as Doc[]
-    const cur = (await wrap(t.objectStore(META).get('currentId'))) as { k: string; v: string } | undefined
-    if (!docs.length) return null
-    const valid = docs.filter((d) => d && typeof d.md === 'string')
-    if (!valid.length) return null
-    const currentId = valid.some((d) => d.id === cur?.v) ? String(cur?.v) : valid[0].id
-    return { docs: valid, currentId }
-  })
+  return tx('readonly', readStore)
 }
 
 /** 只写变化的那几篇 + 删掉被移除的 + 记住当前是第几篇 */
@@ -137,23 +163,15 @@ export async function idbSaveChanged(changed: Doc[], removed: string[], currentI
   })
 }
 
-/** 整库替换（只在"从 localStorage 迁移过来"时用一次） */
-export async function idbReplaceAll(store: DocStore): Promise<void> {
-  await tx('readwrite', (t) => {
+/** 同一事务内确认数据库为空，避免两个页面同时启动时覆盖对方刚迁入的数据。 */
+export async function idbMigrateIfEmpty(store: DocStore): Promise<DocStore> {
+  return tx('readwrite', async (t) => {
+    const existing = await readStore(t)
+    if (existing) return existing
     const docs = t.objectStore(DOCS)
-    docs.clear()
     for (const d of store.docs) docs.put(d)
     t.objectStore(META).put({ k: 'currentId', v: store.currentId })
     t.objectStore(META).put({ k: 'migratedFromLocalStorage', v: Date.now() })
+    return store
   })
-}
-
-/** IndexedDB 到底能不能用（迁移前问一句，免得白写一遍） */
-export async function idbAvailable(): Promise<boolean> {
-  try {
-    await openDb()
-    return true
-  } catch {
-    return false
-  }
 }

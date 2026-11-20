@@ -26,7 +26,7 @@ export const TEST_COUNT = 24
 
 const APP = resolve('Dadealbit Markdown 编辑器.html')
 if (!existsSync(APP)) {
-  console.error('先跑 pnpm build:pure')
+  console.error('先跑 pnpm build')
   process.exit(1)
 }
 

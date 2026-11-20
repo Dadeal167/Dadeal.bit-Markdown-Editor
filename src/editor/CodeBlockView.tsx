@@ -1,6 +1,8 @@
 import { NodeViewContent, NodeViewWrapper, type NodeViewProps } from '@tiptap/react'
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { AUTO_LABEL, CODE_LANGUAGES, languageLabel, resolveLanguage } from './codeLanguages'
+import { documentMacros, MACRO_LANGUAGE } from './math/documentMacros'
+import { diagramResult, diagramUrl, loadDiagram, MERMAID_LANGUAGE, watchDiagram } from './mermaidDiagrams'
 
 /**
  * 代码块的语言选择器（挂在代码块自己头上，像 Notion / Typora 那样）。
@@ -11,10 +13,32 @@ import { AUTO_LABEL, CODE_LANGUAGES, languageLabel, resolveLanguage } from './co
  * 注意：这里渲染的东西（那行语言栏）**不属于文档内容** —— 导出 .md / .html 走的是
  * 文档序列化（renderHTML），所以导出结果里不会出现这行 UI。
  */
-export default function CodeBlockView({ node, updateAttributes, editor }: NodeViewProps) {
+export default function CodeBlockView({ node, getPos, updateAttributes, editor }: NodeViewProps) {
   const [open, setOpen] = useState(false)
   const wrapRef = useRef<HTMLDivElement>(null)
   const language = (node.attrs.language as string | null) ?? null
+  const isDiagram = __BUILD_MODE__ === 'effect' && language === MERMAID_LANGUAGE
+  const isMacro = __BUILD_MODE__ === 'effect' && language === MACRO_LANGUAGE
+  const source = isDiagram ? node.textContent : ''
+  const subscribeDiagram = useCallback((refresh: () => void) => isDiagram ? watchDiagram(source, refresh) : () => {}, [isDiagram, source])
+  const activePreview = useSyncExternalStore(subscribeDiagram, () => isDiagram ? diagramResult(source) : undefined)
+  useEffect(() => {
+    if (!isDiagram) return
+    const task = window.setTimeout(() => void loadDiagram(source), 180)
+    return () => window.clearTimeout(task)
+  }, [isDiagram, source])
+  const subscribe = useCallback((refresh: () => void) => {
+    if (!isMacro) return () => {}
+    editor.on('transaction', refresh)
+    return () => { editor.off('transaction', refresh) }
+  }, [editor, isMacro])
+  const macroStatus = useSyncExternalStore(subscribe, () => {
+    if (!isMacro) return ''
+    const definitions = documentMacros(editor.state.doc)
+    const index = definitions.positions.findIndex((pos) => pos === getPos())
+    if (index < 0) return '请将宏定义块放在文档顶层。'
+    return definitions.problems[index] || '此块中的宏可在当前文档的公式中使用。'
+  })
 
   // 点外面 / 按 Esc 关掉
   useEffect(() => {
@@ -43,7 +67,7 @@ export default function CodeBlockView({ node, updateAttributes, editor }: NodeVi
   const current = resolveLanguage(language)
 
   return (
-    <NodeViewWrapper className="zh-codeblock" data-language={language ?? ''} ref={wrapRef}>
+    <NodeViewWrapper className="zh-codeblock" data-language={language ?? ''} data-diagram-ready={activePreview?.image ? 'true' : undefined} ref={wrapRef}>
       <div className="zh-codeblock__bar" contentEditable={false}>
         <button
           type="button"
@@ -91,6 +115,11 @@ export default function CodeBlockView({ node, updateAttributes, editor }: NodeVi
             用 <code> 是为了让 highlight.js 的 .hljs-* 样式和 .zh-prose code 的排版都照旧生效。 */}
         <NodeViewContent as={'code' as 'div'} />
       </pre>
+      {isMacro && <p className="zh-codeblock__note" role="status" contentEditable={false}>{macroStatus}</p>}
+      {isDiagram && <div className="zh-diagram" contentEditable={false}>
+        {activePreview?.image ? <img src={diagramUrl(activePreview.image)} alt={activePreview.image.alt} draggable={false} />
+          : <p className="zh-codeblock__note" role="status">{activePreview?.error ?? '正在生成图表…'}</p>}
+      </div>}
     </NodeViewWrapper>
   )
 }

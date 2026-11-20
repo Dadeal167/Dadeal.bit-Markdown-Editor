@@ -5,13 +5,15 @@ interface Props {
   outlineOpen: boolean
   /** 存储写满 / 不可用：改动没能保存，常驻提醒 */
   saveFailed?: boolean
+  localFileName?: string
+  localFileStatus?: string
   onToggleMarkdownInput(): void
   /** 点「保存 .md」：这是打开"选格式"菜单的入口（按钮文字不变） */
   onExport(format: SaveFormat): void
 }
 
-import SaveMenu from './SaveMenu'
-import type { SaveFormat } from './SaveMenu'
+import SaveMenu from './publication/SaveMenu'
+import type { SaveFormat } from './publication/saveOptions'
 import { useEffect, useState } from 'react'
 import { formatDuration, sessionStartedAt } from './usageTime'
 
@@ -50,7 +52,8 @@ export function fullDateText(d: Date): string {
 }
 
 export default function StatusBar(props: Props) {
-  const { wordCount, markdownInput, savedAt, outlineOpen, saveFailed, onToggleMarkdownInput, onExport } = props
+  const { wordCount, markdownInput, savedAt, outlineOpen, saveFailed, localFileName, localFileStatus,
+    onToggleMarkdownInput, onExport } = props
   /* 左下角「用时」：本次打开用了多久。15 秒刷一次就够（显示到分钟），
      不用每秒重渲染 —— 对这个数字没意义。 */
   const [now, setNow] = useState(() => Date.now())
@@ -71,7 +74,7 @@ export default function StatusBar(props: Props) {
     <div className="zh-statusbar">
       <div className="zh-statusbar__inner">
         <span className="zh-statusbar__count">字数：{wordCount}</span>
-        <span className="zh-statusbar__count" title="从打开编辑器到现在，一共用了多久">
+        <span className="zh-statusbar__count zh-statusbar__elapsed" title="当前会话时长">
           用时：{formatDuration(Math.max(0, now - sessionStartedAt()))}
         </span>
         <span className="zh-statusbar__clock" title={fullDateText(clock)}>
@@ -86,8 +89,8 @@ export default function StatusBar(props: Props) {
           aria-checked={markdownInput}
           title={
             markdownInput
-              ? 'Markdown 输入已开启：输入 # 、- 、** 这类语法会自动变成标题/列表/加粗。点一下关闭'
-              : 'Markdown 输入已关闭：所有符号原样输入（写乘法号 * 时不会误变斜体）。点一下开启'
+              ? 'Markdown 输入已启用。标题、列表和加粗语法会自动转换。'
+              : 'Markdown 输入已停用。输入内容保留为原始文本。'
           }
         >
           <span className="zh-switch__track">
@@ -98,16 +101,17 @@ export default function StatusBar(props: Props) {
         </button>
 
         {saveFailed ? (
-          <span className="zh-statusbar__draft zh-statusbar__draft--warn" title="浏览器存储写不进去了，请用「保存 .md」把内容存成文件">
-            ⚠️ 改动没能保存（存储已满或不可用）
+          <span className="zh-statusbar__draft zh-statusbar__draft--warn" title="浏览器存储不可用。请将文档导出到本地。">
+            保存失败：浏览器存储已满或不可用
           </span>
         ) : (
-          savedAt !== null && <span className="zh-statusbar__draft">{relTime(savedAt)} · 草稿</span>
+          savedAt !== null && <span className="zh-statusbar__draft" title={relTime(savedAt)}>草稿已自动保存</span>
         )}
+        {localFileName && <span className="zh-statusbar__draft zh-statusbar__file" title={localFileName} role="status">{localFileStatus}</span>}
         {outlineOpen && <span className="zh-statusbar__draft">大纲已展开</span>}
         <span className="zh-statusbar__spacer" />
         {/* 按钮文字保持「保存 .md」，点开可以选格式（Markdown / 知乎 / 通用版 / 网页 / PDF） */}
-        <SaveMenu pill direction="up" label="保存 .md" onPick={onExport} />
+        <SaveMenu pill direction="up" label="保存 .md" localFileName={localFileName} onPick={onExport} />
       </div>
     </div>
   )

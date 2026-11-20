@@ -10,9 +10,17 @@
  * 那条路图片直接由知乎托管，压根不需要图床。
  */
 import type { Editor } from '@tiptap/core'
+import type { Node as PMNode } from '@tiptap/pm/model'
 import { downloadText, getMarkdown } from './editorActions'
 import { mdToZhihuMarkdown } from './zhihuMarkdown'
 import { loadImageBedConfig, uploadToImageBed } from './imageBed'
+import { projectImportedImages } from './localMarkdownFile'
+import { createEquationExportResolver } from './math/equationIndex'
+import { projectObjectMarkdown } from './publication/exportObjects'
+import { projectZhihuMarkdown } from './zhihuCompatibility'
+import { documentMacros } from './math/documentMacros'
+import { expandDocumentMacros } from './math/expandDocumentMacros'
+import { editionDocument, hasEditionBlocks } from './publication/editions'
 
 export const ZHIHU_ADDR_KEY = 'md-editor-zhihu-addr-v1'
 export const ZHIHU_TOKEN_KEY = 'md-editor-zhihu-v1'
@@ -49,22 +57,20 @@ async function assistantAlive(addr: string, token: string): Promise<boolean> {
 }
 
 const HOW_TO = [
-  '想让图片也跟过去，二选一（然后重新导出一次）：',
-  '① 双击助手包里的「开始使用.bat」（助手包在 GitHub Releases 里；手动那条老路是「启动知乎助手.bat」），编辑器和助手会自动接上；',
-  '② 或者在「知乎」面板 →「图床设置」里填一次 GitHub 令牌（不用助手，分享版也能用）。',
-  '另外：发知乎其实可以直接用「存到草稿箱」，图片由知乎自己托管，连图床都不用配。',
+  '运行知乎助手包中的「开始使用.bat」，或在「图床设置」中完成配置后重新导出。',
+  '也可选择「存到草稿箱」，由知乎托管图片。',
 ].join('\n')
 
 /** 换不到公开网址的图片：保留图片本身，但在它上面加一行提示（文件照给，缺图是明摆着的） */
 const NO_URL_HINT =
-  '> 🖼️ 这张图没能换成公开网址（知乎导入时抓不到它）：在知乎里手动把它拖进去，或者按下面两条路重新导出一次'
+  '> 🖼️ 图片缺少公开链接。请在知乎草稿中手动添加该图片。'
 
 /** 把 data: 图片按顺序换成网址；换不到的上面加一行提示 */
 function swapImageUrls(md: string, urls: string[]): { md: string; swapped: number; hinted: number } {
   let i = 0
   let swapped = 0
   let hinted = 0
-  const next = md.replace(/(!\[[^\]]*\]\()(data:[^)\s]+)(\))/g, (whole, a: string, _src: string, c: string) => {
+  const next = md.replace(/(!\[(?:\\.|[^\]\\])*\]\()(data:[^)\s]+)((?: "(?:\\.|[^"\\])*")?\))/g, (whole, a: string, _src: string, c: string) => {
     const u = urls[i]
     i += 1
     if (u) {
@@ -81,14 +87,19 @@ function swapImageUrls(md: string, urls: string[]): { md: string; swapped: numbe
 export async function exportZhihuMarkdown(
   editor: Editor,
   title: string,
-  opts: { onPhase?(text: string): void } = {},
+  opts: { onPhase?(text: string): void; doc?: PMNode; filename?: string } = {},
 ): Promise<ExportOutcome> {
-  const raw = getMarkdown(editor)
-  const first = mdToZhihuMarkdown(raw)
-  const name = (title.trim() || '未命名文档') + '.md'
+  const source = opts.doc ?? editor.state.doc
+  const doc = __BUILD_MODE__ === 'effect' && hasEditionBlocks(source) ? editionDocument(source, 'zhihu') : source
+  const raw = projectImportedImages(getMarkdown(editor, doc), false)
+  const macros = documentMacros(doc).macros
+  const resolveEquation = createEquationExportResolver(editor, (latex) => expandDocumentMacros(latex, macros).latex, doc)
+  const mdWithCaptions = __BUILD_MODE__ === 'effect' ? await projectZhihuMarkdown(projectObjectMarkdown(raw, doc), doc) : raw
+  const first = mdToZhihuMarkdown(mdWithCaptions, resolveEquation)
+  const name = (opts.filename ?? (title.trim() || '未命名文档')) + '.md'
   const md = first.md
 
-  const dataSrcs = [...md.matchAll(/!\[[^\]]*\]\((data:[^)\s]+)\)/g)].map((m) => m[1])
+  const dataSrcs = [...md.matchAll(/!\[(?:\\.|[^\]\\])*\]\((data:[^)\s]+)(?: "(?:\\.|[^"\\])*")?\)/g)].map((m) => m[1])
   const localCount = dataSrcs.length
 
   /** 出文件 */
@@ -97,10 +108,10 @@ export async function exportZhihuMarkdown(
     return {
       ok: true,
       text:
-        `已导出「${name}」：公式 ${first.formulas} 个已转成知乎认的写法，` +
-        (swapped ? `${swapped} 张本机图片已上传图床、换成公开网址 —— 知乎导入时会自己把图抓回去。` : '') +
+        `已导出「${name}」。已转换 ${first.formulas} 个公式。` +
+        (swapped ? `${swapped} 张内嵌图片已上传至图床并替换为公开链接。` : '') +
         (note ? `（${note}）` : '') +
-        '接下来：知乎 → 写文章 → 右上角「导入」→ 选这个文件。',
+        '请在知乎写作页选择「导入」，打开已导出的文件。',
     }
   }
 
@@ -118,7 +129,7 @@ export async function exportZhihuMarkdown(
   let failure = ''
   const bedReady = !!(bed.repo.trim() && bed.token.trim())
   if (viaAssistant) {
-    opts.onPhase?.(`正在把 ${localCount} 张图片传到图床…`)
+    opts.onPhase?.(`正在上传 ${localCount} 张图片至图床…`)
     try {
       const res = await fetch(`${addr}/upload-images`, {
         method: 'POST',
@@ -130,12 +141,12 @@ export async function exportZhihuMarkdown(
       note = json.warnings?.join('；') ?? ''
       failure = json.error ?? ''
     } catch {
-      failure = '连不上助手'
+      failure = '无法连接知乎助手'
     }
     /* 助手那条路走的是 git push，国内网络会抽风（实测重试十几次才成功过）。
        如果用户填过令牌，就换"直传 GitHub 接口"再试一次 —— 两条路互为备份。 */
     if (!urls.some(Boolean) && bedReady) {
-      opts.onPhase?.('助手那条路没成，改用你的 GitHub 令牌直接传…')
+      opts.onPhase?.('正在使用已配置的 GitHub 令牌重试…')
       const r = await uploadToImageBed(bed, dataSrcs)
       if (r.urls.some(Boolean)) {
         urls = r.urls
@@ -146,13 +157,13 @@ export async function exportZhihuMarkdown(
       }
     }
   } else if (bedReady) {
-    opts.onPhase?.(`正在把 ${localCount} 张图片传到图床（用你的 GitHub 令牌）…`)
+    opts.onPhase?.(`正在上传 ${localCount} 张图片至 GitHub 图床…`)
     const r = await uploadToImageBed(bed, dataSrcs)
     urls = r.urls
     note = r.warnings.join('；')
     failure = r.error ?? ''
   } else {
-    failure = failure || '助手没开，也没填图床令牌'
+    failure = failure || '知乎助手未连接，图床尚未配置'
   }
 
   const r = swapImageUrls(md, urls)
@@ -166,11 +177,10 @@ export async function exportZhihuMarkdown(
   return {
     ok: false,
     text:
-      `已导出「${name}」，但还有 ${r.hinted} 张本机图片没换成公开网址` +
+      `已导出「${name}」。${r.hinted} 张内嵌图片缺少公开链接` +
       (failure ? `（${failure}）` : '') +
-      `，文件在那几张图上面各加了一行提示 —— 知乎导入时会丢这几张图，需要手动补，` +
-      `或者发知乎干脆改用「存到草稿箱」（图片由知乎自己托管，不用图床）。` +
-      (r.swapped ? `\n其中 ${r.swapped} 张已经换好网址，那几张没问题。` : '') +
+      '。请在知乎草稿中补充导出文件标记的图片。' +
+      (r.swapped ? `\n${r.swapped} 张图片已替换为公开链接。` : '') +
       `\n${HOW_TO}`,
   }
 }

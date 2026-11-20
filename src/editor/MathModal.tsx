@@ -2,6 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { friendlyMathHint } from './editorActions'
 import { renderKatex } from './tiptap/MathNode'
 import { SYMBOL_CATEGORIES } from './math/symbolData'
+import SymbolPicker from './math/SymbolPicker'
+import { repairLatex, rendersOk } from './math/latexRepair'
+import { EMPTY_MACROS, type MathMacros } from './math/documentMacros'
 import { commandStart, suggestFor, type LatexSuggestion } from './math/latexSuggest'
 import { useEscapeClose } from './useEscapeClose'
 
@@ -69,16 +72,16 @@ interface Props {
   open: boolean
   initialLatex: string
   initialDisplay: boolean
+  macros?: MathMacros
   onClose(): void
   onConfirm(latex: string, display: boolean): void
 }
 
-export default function MathModal({ open, initialLatex, initialDisplay, onClose, onConfirm }: Props) {
+export default function MathModal({ open, initialLatex, initialDisplay, macros = EMPTY_MACROS, onClose, onConfirm }: Props) {
   useEscapeClose(open, onClose)
 
   const [display, setDisplay] = useState(initialDisplay)
   const [tex, setTex] = useState(initialLatex)
-  const [hint, setHint] = useState<string | null>(friendlyMathHint(initialLatex))
   const [openCat, setOpenCat] = useState<string | null>(null)
   const [dropdown, setDropdown] = useState<Dropdown>(null)
   const [inputFontSize, setInputFontSize] = useState(16)
@@ -109,7 +112,6 @@ export default function MathModal({ open, initialLatex, initialDisplay, onClose,
       const brace = s.latex.indexOf('{}')
       const pos = brace >= 0 ? start + brace + 1 : start + s.latex.length
       setTex(next)
-      setHint(friendlyMathHint(next))
       setAcDismissed(true)
       setAcIndex(0)
       setCaret(pos)
@@ -163,24 +165,25 @@ export default function MathModal({ open, initialLatex, initialDisplay, onClose,
   useEffect(() => {
     if (!open) return
     setTex(initialLatex)
-    setHint(friendlyMathHint(initialLatex))
     setDisplay(initialDisplay)
     setOpenCat(null)
     setDropdown(null)
     setFullscreen(false)
-    const timer = window.setTimeout(() => {
+    setCaret(initialLatex.length)
+    setAcIndex(0)
+    setAcDismissed(true)
+    const frame = requestAnimationFrame(() => {
       const ta = taRef.current
-      if (!ta) return
+      if (!ta || ta.closest('[role="dialog"]')?.contains(document.activeElement)) return
       ta.focus()
       ta.setSelectionRange(ta.value.length, ta.value.length)
-    }, 60)
-    return () => window.clearTimeout(timer)
+    })
+    return () => cancelAnimationFrame(frame)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])
 
   const update = useCallback((next: string) => {
     setTex(next)
-    setHint(friendlyMathHint(next))
   }, [])
 
   /** 在光标处插入（textarea 的选区会被替换） */
@@ -191,9 +194,12 @@ export default function MathModal({ open, initialLatex, initialDisplay, onClose,
       const end = ta?.selectionEnd ?? tex.length
       const next = tex.slice(0, start) + latex + tex.slice(end)
       update(next)
+      const brace = latex.indexOf('{}')
+      const pos = brace >= 0 ? start + brace + 1 : start + latex.length
+      setCaret(pos)
+      setAcDismissed(true)
       requestAnimationFrame(() => {
         ta?.focus()
-        const pos = start + latex.length
         ta?.setSelectionRange(pos, pos)
       })
     },
@@ -251,18 +257,22 @@ export default function MathModal({ open, initialLatex, initialDisplay, onClose,
     [tex, update],
   )
 
+  const repaired = useMemo(() => open ? repairLatex(tex, display, macros) : tex, [open, tex, display, macros])
+  const hasRepair = repaired !== tex
+  const hint = !open ? null : hasRepair
+    ? '已预览修复结果，确认时会采用这版公式。'
+    : friendlyMathHint(tex) ?? (!rendersOk(tex, display, macros) ? '这条公式暂时无法解析。检查命令、括号或环境是否完整。' : null)
+
   const previewHtml = useMemo(() => {
     if (!tex.trim()) return '<span class="zh-formula__empty">输入公式后在这里实时预览</span>'
     try {
-      return renderKatex(tex, display)
+      return renderKatex(repaired, display, macros)
     } catch {
       return '<span class="zh-formula__error">公式暂无法解析，请检查</span>'
     }
-  }, [tex, display])
+  }, [tex, repaired, display, macros])
 
   if (!open) return null
-
-  const activeCat = SYMBOL_CATEGORIES.find((c) => c.key === openCat) ?? null
 
   return (
     <div className="zh-modal-mask" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
@@ -322,6 +332,11 @@ export default function MathModal({ open, initialLatex, initialDisplay, onClose,
               <span className="zh-mathcat__caret">▾</span>
             </button>
           ))}
+          <button type="button" className={`zh-mathcat zh-mathcat--search${openCat === 'search' ? ' zh-mathcat--active' : ''}`}
+            aria-expanded={openCat === 'search'} onClick={() => {
+              setOpenCat((current) => current === 'search' ? null : 'search')
+              setDropdown(null)
+            }}>找符号</button>
         </div>
 
         {/* 输入区 + 实时预览（分类面板浮在它们上面） */}
@@ -347,6 +362,7 @@ export default function MathModal({ open, initialLatex, initialDisplay, onClose,
                 }}
                 onClick={(e) => setCaret((e.target as HTMLTextAreaElement).selectionStart ?? 0)}
                 onKeyDown={(e) => {
+                  if (e.nativeEvent.isComposing) return
                   if (suggestions.length === 0) return
                   if (e.key === 'ArrowDown') {
                     e.preventDefault()
@@ -398,39 +414,23 @@ export default function MathModal({ open, initialLatex, initialDisplay, onClose,
             <div className="zh-formula__preview" dangerouslySetInnerHTML={{ __html: previewHtml }} />
           </div>
 
-          {activeCat && (
-            <div className="zh-mathpanel">
-              <button type="button" className="zh-mathpanel__close" onClick={() => setOpenCat(null)}>
-                ✕
-              </button>
-              {activeCat.sections.map((sec) => (
-                <div className="zh-mathsec" key={sec.title}>
-                  <div className="zh-mathsec__title">{sec.title}</div>
-                  <div className="zh-mathsec__grid">
-                    {sec.items.map((item) => (
-                      <button
-                        key={item.latex + item.label}
-                        type="button"
-                        className="zh-symbol"
-                        title={`${item.label}　${item.latex}`}
-                        data-latex={item.latex}
-                        onClick={() => {
-                          insertLatex(item.latex)
-                          setOpenCat(null)
-                        }}
-                        dangerouslySetInnerHTML={{ __html: faces.get(item.face) ?? item.label }}
-                      />
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
+          <SymbolPicker category={openCat} faces={faces} onPick={insertLatex} onClose={() => setOpenCat(null)} />
         </div>
 
         {/* 防呆提示 */}
-        <div className={`zh-mathhint${hint ? ' zh-mathhint--warn' : ''}`} role="status">
-          {hint ?? '点分类按钮挑符号，点一下就填进输入框；也可以自己直接敲'}
+        <div className={`zh-mathhint${hint && !hasRepair ? ' zh-mathhint--warn' : ''}`} role="status">
+          <span>{hint ?? '按类别浏览符号，或按名称搜索。'}</span>
+          {hasRepair && (
+            <button type="button" className="zh-pill zh-pill--primary" onClick={() => {
+              update(repaired)
+              setCaret(repaired.length)
+              setAcDismissed(true)
+              requestAnimationFrame(() => {
+                taRef.current?.focus()
+                taRef.current?.setSelectionRange(repaired.length, repaired.length)
+              })
+            }}>应用修复</button>
+          )}
         </div>
 
         {/* 功能行 */}
@@ -591,7 +591,7 @@ export default function MathModal({ open, initialLatex, initialDisplay, onClose,
             className="zh-btn-solid zh-btn-confirm"
             disabled={!tex.trim()}
             onClick={() => {
-              onConfirm(tex.trim(), display)
+              onConfirm(repaired.trim(), display)
               onClose()
             }}
           >

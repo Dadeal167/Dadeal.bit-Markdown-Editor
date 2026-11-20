@@ -14,7 +14,7 @@ const distIndex = resolve('dist', 'index.html')
 const fileUrl = 'file:///' + friendly.replace(/\\/g, '/')
 
 if (!existsSync(friendly)) {
-  console.error('根目录没有「Dadealbit Markdown 编辑器.html」，先跑 pnpm build:pure')
+  console.error('根目录没有「Dadealbit Markdown 编辑器.html」，先跑 pnpm build')
   process.exit(1)
 }
 

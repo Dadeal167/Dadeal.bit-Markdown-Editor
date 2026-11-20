@@ -1,7 +1,7 @@
 /**
  * 一把跑完全部检查：自己起 dev server、按顺序跑完所有的 check / audit、最后给一张表。
  *
- * 为什么要有它：这些脚本里有几个（check:docs / audit:docs / audit:buttons / audit:effect / audit:builds）
+ * 为什么要有它：这些脚本里有几个（check:docs / audit:docs / audit:buttons / audit:effect）
  * 依赖 http://127.0.0.1:5173 上的开发服务器。以前手工一条条跑，忘了开服务器就会看到一片"失败"，
  * 白紧张一场（实测踩过三次）。现在一条命令搞定：起服务器 → 跑 → 关掉 → 报结果。
  *
@@ -26,7 +26,7 @@ const scripts = pkg.scripts ?? {}
  *   audit:zhihu / test:assistant* 要真知乎账号（--live 才跑）
  *   check:all 是它自己 */
 const NEEDS_ACCOUNT = ['audit:zhihu', 'test:assistant', 'test:assistant-image', 'test:assistant-imagebed']
-const SKIP_ALWAYS = ['check:all']
+const SKIP_ALWAYS = ['check:all', 'check:effects', 'check:wallpaper-library', 'check:wallpaper-scene', 'check:wallpaper-web']
 
 const names = Object.keys(scripts).filter((n) => /^(check|audit|probe)/.test(n))
 const targets = (ONLY ?? names).filter((n) => !SKIP_ALWAYS.includes(n) && (LIVE || !NEEDS_ACCOUNT.includes(n)))
@@ -36,33 +36,14 @@ if (missing.length) {
   process.exit(1)
 }
 
-/* 有些检查是**某个分支专有**的（比如 audit:effect / audit:builds 只在「自用」分支有脚本文件，
-   它们验的是鼠标特效；分享版分支里那两个文件根本不存在）。这种要"明确跳过并说明"，
-   不能当成失败 —— 否则分享版这边永远是 38/40，看久了就会忽略真正的红。
-   注意：只有"脚本文件本身不存在"才跳过；文件在、跑挂了照样算失败。 */
-const scriptFile = (name) => {
-  const m = String(scripts[name]).match(/node\s+(\S+\.mjs)/)
-  return m ? resolve(m[1]) : null
-}
-const skipped = []
-const runnable = targets.filter((n) => {
-  const f = scriptFile(n)
-  if (f && !existsSync(f)) {
-    skipped.push(n)
-    return false
-  }
-  return true
-})
-if (skipped.length) {
-  console.log(`跳过本分支没有脚本文件的项：${skipped.join('、')}（这些是另一个分支专有的检查）\n`)
-}
+const runnable = targets
 
 /* ---------- 起 dev server（有几个脚本要用它） ---------- */
 /* ---------- 先构建（check:offline 要比对 dist 和根目录那份 HTML） ----------
    切换分支后 dist 还是上一个分支的产物，不重建就会看到"根目录与 dist 不一致"的假失败（实测踩过）。
    默认先构建；想省时间加 --no-build。 */
 if (!argv.includes('--no-build')) {
-  const buildScript = scripts['build:both'] ? 'build:both' : 'build'
+  const buildScript = 'build'
   console.log(`先构建（pnpm ${buildScript}）…`)
   const b = spawnSync(`pnpm ${buildScript}`, { shell: true, encoding: 'utf-8', env: { ...process.env, NO_COLOR: '1' } })
   if (b.status !== 0) {

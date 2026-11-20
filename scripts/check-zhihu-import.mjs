@@ -18,7 +18,7 @@ import { chromium } from 'playwright-core'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
-const APP = resolve('Dadealbit Markdown 编辑器.html')
+const APP = resolve(process.env.DADEALBIT_TEST_HTML ?? 'Dadealbit Markdown 编辑器.html')
 if (!existsSync(APP)) {
   console.error('先跑 pnpm build')
   process.exit(1)
@@ -74,6 +74,8 @@ const EXPECT_MATH = 6 // x_1+y_2、18、块级求和、1/2、markdown 语法的 
 
 const browser = await chromium.launch({ channel: 'msedge', headless: true })
 const page = await browser.newPage({ viewport: { width: 1280, height: 950 }, acceptDownloads: true })
+await page.addInitScript(() => { window.showOpenFilePicker = undefined })
+await page.route('https://pic1.zhimg.com/*.jpg', route => route.fulfill({ contentType: 'image/png', body: Buffer.from(PNG, 'base64') }))
 const errs = []
 page.on('pageerror', (e) => errs.push(String(e).slice(0, 140)))
 await page.goto(app, { waitUntil: 'load', timeout: 60000 })
@@ -98,7 +100,7 @@ async function exportMd(fileName) {
   await page.waitForTimeout(400)
   const [download] = await Promise.all([
     page.waitForEvent('download', { timeout: 15000 }),
-    page.locator('.zh-zhihu__export button', { hasText: '导出知乎 .md' }).click(),
+    page.locator('.zh-zhihu__export .zh-pill--primary').click(),
   ])
   const saved = resolve(DL, fileName)
   await download.saveAs(saved)

@@ -16,7 +16,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } fr
 import { resolve } from 'node:path'
 
 const ROOT = resolve(import.meta.dirname, '..')
-const ZIP = resolve(process.argv[2] ?? resolve(ROOT, '.probe', 'release', 'Dadealbit-Zhihu-Assistant-v1.0.0.zip'))
+const ZIP = resolve(process.argv[2] ?? resolve(ROOT, '.probe', 'release', 'Dadealbit-Zhihu-Assistant-v1.2.0.zip'))
 const EXTRACT = resolve(ROOT, '.probe', 'bundle-extract')
 
 const results = []
@@ -39,11 +39,11 @@ console.log(`验收对象：${ZIP}（${(statSync(ZIP).size / 1048576).toFixed(1)
 rmSync(EXTRACT, { recursive: true, force: true })
 mkdirSync(EXTRACT, { recursive: true })
 const unzip = spawnSync(
-  'powershell',
-  ['-NoProfile', '-Command', `Expand-Archive -Path '${ZIP}' -DestinationPath '${EXTRACT}' -Force`],
-  { encoding: 'utf-8' },
+  'powershell.exe',
+  ['-NoProfile', '-Command', 'Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop; [IO.Compression.ZipFile]::ExtractToDirectory($env:DADEALBIT_ZIP_SOURCE, $env:DADEALBIT_ZIP_OUTPUT, [Text.Encoding]::UTF8)'],
+  { encoding: 'utf-8', env: { ...process.env, DADEALBIT_ZIP_SOURCE: ZIP, DADEALBIT_ZIP_OUTPUT: EXTRACT } },
 )
-if (!existsSync(resolve(EXTRACT, '启动器', '开始使用.bat'))) {
+if (unzip.status !== 0 || !existsSync(resolve(EXTRACT, '启动器', '开始使用.bat'))) {
   console.error('解压失败：', unzip.stdout ?? '', unzip.stderr ?? '')
   process.exit(1)
 }
@@ -51,6 +51,7 @@ if (!existsSync(resolve(EXTRACT, '启动器', '开始使用.bat'))) {
 /* ---------- 2. 内容检查 ---------- */
 const must = [
   'Dadealbit Markdown 编辑器.html',
+  'LICENSE',
   '使用说明.txt',
   // .bat 统一放在「启动器」子文件夹里（根目录只留编辑器、说明和两个数据文件夹）
   '启动器/开始使用.bat',
@@ -67,7 +68,7 @@ const must = [
 const missing = must.filter((f) => !existsSync(resolve(EXTRACT, f.replace(/\//g, '\\'))))
 check('该有的文件都在（编辑器/说明/4 个 bat/便携 Node/助手 + 依赖）', missing.length === 0, missing.join('、') || `${must.length} 项`)
 
-/* 包里绝不能出现自用版的东西：特效、那枚从游戏提取的指针素材、特效版 HTML */
+/* 发布包只应包含当前编辑器，不附带本机壁纸或单独的游戏素材。 */
 const allFiles = []
 const walk = (dir) => {
   for (const e of readdirSync(dir, { withFileTypes: true })) {
@@ -78,24 +79,23 @@ const walk = (dir) => {
 }
 walk(EXTRACT)
 check(
-  '没有把自用版的东西打进包（特效版 HTML / 指针素材）',
-  !allFiles.some((f) => /特效版|cursor\.png|EffectPanel|mouseSpark/i.test(f)),
+  '发布包没有附带本机壁纸或额外的编辑器',
+  !allFiles.some((f) => /特效版|cursor\.png|\.(atlas|skel|pkg)$/i.test(f)),
   `${allFiles.length} 个文件扫过`,
 )
 
 const html = readFileSync(resolve(EXTRACT, 'Dadealbit Markdown 编辑器.html'), 'utf-8')
-const leaked = ['sparkCanvas', 'fx-cursor', 'zh-fx__', 'md-editor-mouse-effect'].filter((m) => html.includes(m))
-check('包里的编辑器是分享版（无特效代码）', leaked.length === 0, leaked.join('、') || `${(html.length / 1048576).toFixed(2)} MB`)
+check('HTML 包含当前版本的鼠标效果', html.includes('sparkCanvas'))
 
 /* bat 的纪律：纯 ASCII + CRLF（中文会因编码问题打不开，LF 在 cmd 下也可能出问题） */
-const bats = readdirSync(EXTRACT).filter((f) => f.endsWith('.bat'))
+const bats = allFiles.filter((f) => f.endsWith('.bat'))
 const badBats = bats.filter((f) => {
-  const buf = readFileSync(resolve(EXTRACT, f))
+  const buf = readFileSync(f)
   const ascii = buf.every((b) => b < 0x80)
   const crlf = buf.includes(Buffer.from('\r\n'))
   return !ascii || !crlf
 })
-check('bat 仍是纯 ASCII + CRLF', badBats.length === 0, badBats.join('、') || `${bats.length} 个 bat`)
+check('bat 仍是纯 ASCII + CRLF', bats.length > 0 && badBats.length === 0, badBats.join('、') || `${bats.length} 个 bat`)
 
 /* 说明文件是 UTF-8 with BOM（记事本双击不乱码） */
 {

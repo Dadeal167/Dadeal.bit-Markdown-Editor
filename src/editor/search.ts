@@ -12,13 +12,41 @@
 import { Extension } from '@tiptap/core'
 import { Plugin, PluginKey } from '@tiptap/pm/state'
 import type { EditorState } from '@tiptap/pm/state'
-import type { Node as PMNode } from '@tiptap/pm/model'
+import { DOMParser as PMDOMParser, type Node as PMNode } from '@tiptap/pm/model'
 import { Decoration, DecorationSet } from '@tiptap/pm/view'
+import { closeHistory } from '@tiptap/pm/history'
 import type { Editor } from '@tiptap/core'
+import type { Doc } from './documents'
+import { escapeMarkdownDestinations } from './tiptap/mdDestinations'
+import { protectMathSpans, recoverEscapedMath, stripLeakedMarks } from './tiptap/mathMarkdown'
+import { looksLikeFormula, stripExporterHeader } from './zhihuMarkdown'
+
+const parsedDocuments = new WeakMap<Doc, { schema: Editor['schema']; node: PMNode }>()
+
+export function searchableDocument(editor: Editor, doc: Doc): PMNode | null {
+  const cached = parsedDocuments.get(doc)
+  if (cached?.schema === editor.schema) return cached.node
+  const storage = editor.storage as unknown as { markdown?: { parser?: { parse(value: string): string } } }
+  const parser = storage.markdown?.parser
+  if (!parser) return null
+  try {
+    const template = document.createElement('template')
+    const markdown = recoverEscapedMath(stripExporterHeader(stripLeakedMarks(doc.md, '检索文档')), looksLikeFormula)
+    const { md } = protectMathSpans(markdown)
+    template.innerHTML = parser.parse(escapeMarkdownDestinations(md))
+    const node = PMDOMParser.fromSchema(editor.schema).parse(template.content)
+    parsedDocuments.set(doc, { schema: editor.schema, node })
+    return node
+  } catch {
+    return null
+  }
+}
 
 export interface SearchMatch {
   from: number
   to: number
+  kind: 'text' | 'formula'
+  text: string
   /** 命中处周边的原文（`before` + 命中字 + `after`），给结果列表显示用 */
   before: string
   after: string
@@ -47,38 +75,67 @@ const SNIPPET_MAX = 70
 const flat = (s: string): string => s.replace(/\s+/g, ' ')
 
 /**
- * 找出所有命中：大小写不敏感；只在**同一个文本节点**里匹配
- * （跨节点匹配会把高亮切成两半，ProseMirror 的 inline decoration 处理不了）。
+ * 搜索不区分大小写，允许在连续文字中跨越加粗等标记。
  *
  * 顺带把命中处前后的原文取出来（`before` / `after`）——
  * 结果列表要"把对应的那段文字完整显示出来"，只给个序号是看不出是哪一处的。
  */
-export function findMatches(doc: PMNode, query: string): SearchMatch[] {
-  const q = query.trim().toLowerCase()
+export function findMatches(doc: PMNode, query: string, limit = MAX_MATCHES, includeFormulas = true): SearchMatch[] {
+  const q = query.trim()
   if (!q) return []
+  const pattern = new RegExp(q.replace(/[.*+?^$(){}|[\]\\]/g, '\\$&'), 'giu')
   const out: SearchMatch[] = []
-  doc.descendants((node, pos) => {
-    if (out.length >= MAX_MATCHES) return false
-    if (!node.isText || !node.text) return
-    // 公式、代码块里的文字也一起搜（用户找的是"文档里的字"，不该漏）
-    const text = node.text
-    const hay = text.toLowerCase()
-    let at = hay.indexOf(q)
-    while (at >= 0) {
-      const start = pos + at
-      const end = pos + at + q.length
+  let run = ''
+  let runStart = 0
+  const search = (source: string, pos: number, nodeSize?: number) => {
+    pattern.lastIndex = 0
+    let hit: RegExpExecArray | null
+    while (out.length < limit && (hit = pattern.exec(source))) {
+      const start = hit.index
+      const end = start + hit[0].length
       out.push({
-        from: start,
-        to: end,
-        before: flat(text.slice(Math.max(0, at - SNIPPET_SIDE), at)),
-        after: flat(text.slice(at + q.length, at + q.length + SNIPPET_SIDE)),
+        from: nodeSize === undefined ? pos + start : pos,
+        to: nodeSize === undefined ? pos + end : pos + nodeSize,
+        kind: nodeSize === undefined ? 'text' : 'formula',
+        text: hit[0],
+        before: flat(source.slice(Math.max(0, start - SNIPPET_SIDE), start)),
+        after: flat(source.slice(end, end + SNIPPET_SIDE)),
       })
-      if (out.length >= MAX_MATCHES) break
-      at = hay.indexOf(q, at + q.length)
+      if (nodeSize !== undefined) break
     }
-    return
+  }
+  const flush = () => {
+    if (run) search(run, runStart)
+    run = ''
+  }
+  doc.descendants((node, pos) => {
+    if (out.length >= limit) return false
+    if (node.isText && node.text) {
+      if (run && runStart + run.length !== pos) flush()
+      if (!run) runStart = pos
+      run += node.text
+    } else {
+      flush()
+      if (includeFormulas && (node.type.name === 'mathInline' || node.type.name === 'mathBlock')) {
+        search(String(node.attrs.latex ?? ''), pos, node.nodeSize)
+      }
+    }
   })
+  flush()
   return out
+}
+
+/** 逆序替换使前面的位置保持有效，整次操作可以一次撤销。 */
+export function replaceTextMatches(editor: Editor, matches: readonly SearchMatch[], replacement: string): number {
+  const textMatches = matches.filter((match) => match.kind === 'text' && match.text !== replacement)
+  if (!textMatches.length) return 0
+  const transaction = closeHistory(editor.state.tr)
+  for (let index = textMatches.length - 1; index >= 0; index--) {
+    const { from, to } = textMatches[index]
+    transaction.insertText(replacement, from, to)
+  }
+  editor.view.dispatch(transaction)
+  return textMatches.length
 }
 
 /**
@@ -86,14 +143,15 @@ export function findMatches(doc: PMNode, query: string): SearchMatch[] {
  * 太长就两边对称地掐，**命中字本身一定要完整留着**（这是"完整显示"的核心）。
  * 前缀加 `…` 表示前面还有内容，保证最终长度不超过 SNIPPET_MAX。
  */
-export function snippetOf(match: SearchMatch, query: string): string {
-  const hit = flat(query.trim())
+export function snippetOf(match: SearchMatch): string {
+  const hit = flat(match.text)
   const room = Math.max(0, SNIPPET_MAX - hit.length)
   const want = Math.floor(room / 2)
 
   let before = match.before
   let after = match.after
-  if (before.length > want) before = '…' + before.slice(-(want - 1))
+  if (!want) return hit
+  if (before.length > want) before = '…' + before.slice(before.length - want + 1)
   if (after.length > want) after = after.slice(0, want - 1) + '…'
   return before + hit + after
 }
@@ -114,6 +172,11 @@ export function scrollToMatch(editor: Editor, match: SearchMatch | undefined): v
   if (!match) return
   try {
     const view = editor.view
+    if (match.kind === 'formula') {
+      const node = view.nodeDOM(match.from)
+      if (node instanceof Element) node.scrollIntoView({ block: 'center', behavior: 'smooth' })
+      return
+    }
     const dom = view.domAtPos(match.from)
     const el = (dom.node.nodeType === 3 ? dom.node.parentElement : (dom.node as HTMLElement)) ?? null
     el?.scrollIntoView({ block: 'center', behavior: 'smooth' })
@@ -143,11 +206,12 @@ export const SearchHighlight = Extension.create({
             if (!query.trim()) return DecorationSet.empty
             const matches = findMatches(state.doc, query)
             if (!matches.length) return DecorationSet.empty
-            const decos = matches.map((m, i) =>
-              Decoration.inline(m.from, m.to, {
-                class: i === current ? 'zh-search-hit zh-search-hit--current' : 'zh-search-hit',
-              }),
-            )
+            const decos = matches.map((match, index) => {
+              const attrs = { class: index === current ? 'zh-search-hit zh-search-hit--current' : 'zh-search-hit' }
+              return match.kind === 'formula'
+                ? Decoration.node(match.from, match.to, attrs)
+                : Decoration.inline(match.from, match.to, attrs)
+            })
             return DecorationSet.create(state.doc, decos)
           },
         },

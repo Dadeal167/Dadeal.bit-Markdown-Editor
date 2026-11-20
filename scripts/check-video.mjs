@@ -13,7 +13,7 @@ import { chromium } from 'playwright-core'
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 
-const APP = resolve('Dadealbit Markdown 编辑器.html')
+const APP = resolve(process.env.DADEALBIT_TEST_HTML ?? 'Dadealbit Markdown 编辑器.html')
 if (!existsSync(APP)) {
   console.error('先跑 pnpm build')
   process.exit(1)
@@ -57,6 +57,10 @@ const openApp = async () => {
   const page = await browser.newPage({ viewport: { width: 1300, height: 900 } })
   const errs = []
   page.on('pageerror', (e) => errs.push(String(e).slice(0, 140)))
+  // 播放器由第三方提供。在本地验证 iframe 发出了正确请求，不依赖第三方服务状态。
+  await page.route(/https:\/\/(?:player\.bilibili\.com|www\.youtube\.com)\//, (route) =>
+    route.fulfill({ contentType: 'text/html; charset=utf-8', body: '<p>测试播放器</p>' }),
+  )
   await page.goto(app, { waitUntil: 'load', timeout: 60000 })
   await page.waitForSelector('.ProseMirror', { timeout: 30000 })
   await page.waitForTimeout(900)
@@ -66,7 +70,9 @@ const openApp = async () => {
 
 const openVideoModal = async (page) => {
   await page.keyboard.press('Escape').catch(() => {})
-  await page.locator('.zh-toolbar .zh-btn[title="视频"]').click()
+  const insert = page.getByTitle('插入', { exact: true })
+  if (await insert.isVisible()) await insert.click()
+  await page.getByRole('button', { name: '视频', exact: true }).click()
   await page.waitForSelector('.zh-modal--video', { timeout: 5000 })
 }
 const insertButton = (page) =>
@@ -105,6 +111,11 @@ const insertButton = (page) =>
     }),
     await page.evaluate(() => document.querySelector('.video-node iframe')?.src ?? '（没有 iframe）'),
   )
+  check('播放器地址能在 iframe 中加载', await page.frameLocator('.video-node iframe').first().getByText('测试播放器').count() === 1)
+  const links = page.getByRole('link', { name: '在网页打开视频' })
+  check('B 站和 YouTube 都提供原视频网页链接',
+    (await links.first().getAttribute('href')) === 'https://www.bilibili.com/video/BV1xx411c7mD'
+    && (await links.nth(6).getAttribute('href')) === 'https://www.youtube.com/watch?v=dQw4w9WgXcQ')
   check('这一轮没有页面错误', page.__errs.length === 0, page.__errs.slice(0, 2).join(' | ') || '无')
   await page.close()
 }

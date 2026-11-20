@@ -436,7 +436,7 @@ for (const m of MUTATIONS) {
   writeFileSync(targetPath, mutated, 'utf8')
 
   /* 关键：先确认构建真的成功，否则会拿旧产物跑出假绿 */
-  const build = run('pnpm', ['build:pure'])
+  const build = run('pnpm', ['build'])
   const buildOk = /已生成可直接双击的文件/.test(build) && !/error TS|Build failed/i.test(build)
   if (!buildOk) {
     console.log(`\n=== 变异：${m.name} ===\n  ❌ 变异后**构建失败** —— 无法判定，不是"没抓住"`)
@@ -466,7 +466,7 @@ for (const m of MUTATIONS) {
 for (const [key, path] of Object.entries(TARGETS)) {
   writeFileSync(path, originals[key], 'utf8')
 }
-run('pnpm', ['build:pure'])
+run('pnpm', ['build'])
 const check = run('node', [SUITE])
 const restoredSummary = (check.match(/(\d+)\/(\d+) 条断言通过/) || [])[0] ?? '(没跑到汇总)'
 const checkPerf = run('node', ['scripts/check-typing-performance.mjs'])

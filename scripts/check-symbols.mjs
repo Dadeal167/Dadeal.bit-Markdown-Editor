@@ -21,7 +21,7 @@ await page.locator('.zh-btn[title="公式"]').click()
 await page.waitForSelector('.zh-modal--math', { timeout: 5000 })
 await page.waitForTimeout(500)
 
-const categories = await page.locator('.zh-mathcat').allInnerTexts()
+const categories = await page.locator('.zh-mathcat:not(.zh-mathcat--search)').allInnerTexts()
 let total = 0
 const broken = []
 const invisible = []

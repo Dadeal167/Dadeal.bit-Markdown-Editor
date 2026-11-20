@@ -16,13 +16,23 @@ import { VideoEmbed } from './tiptap/VideoNode'
 import { TextColor } from './tiptap/TextColor'
 import { DimColorFix } from './readableColors'
 import { SearchHighlight } from './search'
-import type { Node as PMNode } from '@tiptap/pm/model'
+import { WritingFocus } from './tiptap/WritingFocus'
+import { ChapterManagement } from './tiptap/chapters'
+import { FootnoteDefinition, MathStatement, ScholarReference } from './tiptap/ScholarNodes'
+import { EquationNumbering } from './math/equationIndex'
+import { ObjectNumbering, ObjectReference, objectReferenceText } from './tiptap/objectReferences'
+import type { Node as PMNode, Slice } from '@tiptap/pm/model'
+import type { EditorView } from '@tiptap/pm/view'
 import { convertRawMath, escapeNonMathDollars } from './math/rawMathText'
 import { protectMathSpans, recoverEscapedMath, stripLeakedMarks } from './tiptap/mathMarkdown'
 import { repairLatex } from './math/latexRepair'
+import { documentMacros, markdownMacros, MACRO_LANGUAGE } from './math/documentMacros'
 import { looksLikeFormula, stripExporterHeader } from './zhihuMarkdown'
-import { MarkdownTable } from './tiptap/tableMarkdown'
+import { CaptionedTableView, MarkdownTable } from './tiptap/tableMarkdown'
 import { MAX_IMAGE_FILE, getMarkdown, prepareImageDataUrl, setMarkdown } from './editorActions'
+import { WikiLink } from './tiptap/WikiLink'
+import { EditionBlock } from './tiptap/EditionBlock'
+import { ReadingMode } from './tiptap/ReadingMode'
 
 interface MarkdownStorage {
   parser?: { parse: (content: string, options?: { inline?: boolean }) => string }
@@ -45,7 +55,7 @@ interface MarkdownStorage {
  * 只动「纯文本」这一份表示：`text/html` 那条路由节点的 renderHTML 负责，
  * 公式仍是带 data-latex 的真节点，粘回本编辑器不会退化成源码。
  */
-function clipboardTextSerializer(slice: { content: PMNode }): string {
+function clipboardTextSerializer(slice: Slice, view: EditorView): string {
   const leaf = (node: PMNode): string => {
     const attrs = (node.attrs ?? {}) as Record<string, unknown>
     if (node.type.name === 'mathInline') {
@@ -56,15 +66,15 @@ function clipboardTextSerializer(slice: { content: PMNode }): string {
       const latex = String(attrs.latex ?? '')
       return latex ? `$$\n${latex}\n$$` : ''
     }
+    if (node.type.name === 'objectReference') return objectReferenceText(view.state.doc, node.attrs.target)
+    if (node.type.name === 'scholarReference') {
+      const prefix = attrs.kind === 'footnote' ? '^' : attrs.kind === 'statement' ? '@stmt:' : '@'
+      return `[${prefix}${attrs.key}]`
+    }
     /* 图片等其它原子节点：退回 alt / src，至少不是一片空白 */
     return String(attrs.alt ?? attrs.src ?? '')
   }
-  /* 这里用结构类型而不是 PMNode：`PMNode['content']` 会被解析成 DOM 的 Node
-     （两者同名，PMNode 是由 @tiptap/pm 重新导出的），拿不到 textBetween 的签名 */
-  const content = slice.content as unknown as {
-    size: number
-    textBetween: (from: number, to: number, blockSep: string, leaf: (n: PMNode) => string) => string
-  }
+  const { content } = slice
   /* 最后过一道"标记字符守卫"：用户实测 Ctrl+C 粘到记事本时，公式定界符曾变成
      U+0002（内部标记）—— 显示成豆腐块 □、或干脆不可见。见 mathMarkdown.stripLeakedMarks。 */
   return stripLeakedMarks(content.textBetween(0, content.size, '\n\n', leaf), 'copy')
@@ -85,6 +95,7 @@ interface Options {
   markdownInput: boolean
   onUpdate(markdown: string): void
   onReady?(editor: Editor): void
+  captureImageTarget?(): { isCurrent(): boolean; save?(dataUrl: string): Promise<string | undefined> }
 }
 
 /**
@@ -132,12 +143,14 @@ function bumpSerializeCount(): void {
   }
 }
 
-export function useMarkdownEditor({ initialMarkdown, markdownInput, onUpdate, onReady }: Options) {
+export function useMarkdownEditor({ initialMarkdown, markdownInput, onUpdate, onReady, captureImageTarget }: Options) {
   const editorRef = useRef<Editor | null>(null)
   /* 界面的 onUpdate 是每次渲染新建的闭包，而编辑器只建一次 —— 存进 ref 里拿最新的，
      否则会一直调用第一次渲染时那个（它捕获的 state 可能早就过期了） */
   const onUpdateRef = useRef(onUpdate)
   onUpdateRef.current = onUpdate
+  const imageTargetRef = useRef(captureImageTarget)
+  imageTargetRef.current = captureImageTarget
   /** 待办的那次"交 Markdown"；null = 没有待办 */
   const pendingTimer = useRef<number | null>(null)
   /** 这一轮"脏"是从什么时候开始的（用来算最大等待） */
@@ -184,9 +197,11 @@ export function useMarkdownEditor({ initialMarkdown, markdownInput, onUpdate, on
 
   const insertImageFiles = useCallback(async (files: File[]) => {
     let failed = 0
+    const target = imageTargetRef.current?.()
     for (const file of files) {
+      if (target && !target.isCurrent()) return
       if (file.size > MAX_IMAGE_FILE) {
-        window.alert('图片超过 12MB，先压缩一下再插入吧')
+        window.alert('图片大小超过 12 MB。请压缩后重新插入。')
         continue
       }
       // 每一轮都重新取一次实例：等图片解码的这会儿，编辑器可能已经被重建了
@@ -199,20 +214,23 @@ export function useMarkdownEditor({ initialMarkdown, markdownInput, onUpdate, on
       try {
         // 大图自动缩放到长边 1600px 再内嵌，避免 Markdown 体积失控
         const dataUrl = await prepareImageDataUrl(file)
-        editor.chain().focus().setImage({ src: dataUrl, alt: file.name }).run()
+        if (editor.isDestroyed || (target && !target.isCurrent())) return
+        const localAsset = await target?.save?.(dataUrl)
+        if (editor.isDestroyed || (target && !target.isCurrent())) return
+        editor.chain().focus().setImage({ src: dataUrl, alt: file.name, ...(localAsset ? { localAsset } : {}) }).run()
       } catch {
         // 单张读不出来就跳过这一张，别把后面几张一起丢掉（以前是整批静默中断）
         failed += 1
       }
     }
-    if (failed > 0) window.alert(`有 ${failed} 张图片没能读进来（已跳过），可以再试一次或换一张`)
+    if (failed > 0) window.alert(`${failed} 张图片无法读取。请重新插入或使用其他图片。`)
   }, [])
 
   const editor = useEditor({
     extensions: [
       StarterKit.configure({
         codeBlock: false,
-        heading: { levels: [1, 2, 3] },
+        heading: { levels: __BUILD_MODE__ === 'effect' ? [1, 2, 3, 4, 5, 6] : [1, 2, 3] },
         // 链接要能直接点开（用户反馈"输出的网址点不动"）；
         // 想改文字就点到链接旁边用方向键，或再点「链接」按钮
         link: { openOnClick: true, autolink: true, linkOnPaste: true },
@@ -221,7 +239,7 @@ export function useMarkdownEditor({ initialMarkdown, markdownInput, onUpdate, on
       CharacterCount,
       // table 用我们自己的（修过"整格只有公式/图片时导出会丢"的序列化问题）
       TableKit.configure({ table: false }),
-      MarkdownTable.configure({ resizable: false }),
+      MarkdownTable.configure({ resizable: false, ...(__BUILD_MODE__ === 'effect' ? { View: CaptionedTableView } : {}) }),
       // 图片用我们自己的（修过"数字 alt 会让整篇存不下来"的坑）
       SafeImage.configure({ allowBase64: true }),
       CodeBlockWithLang,
@@ -243,6 +261,8 @@ export function useMarkdownEditor({ initialMarkdown, markdownInput, onUpdate, on
       DimColorFix,
       // 搜索高亮：也是 decoration，搜完不会在文档里留下任何痕迹
       SearchHighlight,
+      ...(__BUILD_MODE__ === 'effect' ? [WritingFocus, EquationNumbering, ObjectNumbering, ObjectReference, ChapterManagement,
+        ScholarReference, FootnoteDefinition, MathStatement, WikiLink, EditionBlock, ReadingMode] : []),
     ],
     // ⚠️ 初始内容**不能**交给 content: 直接解析 —— 那会绕过公式保护，
     //    $…$ 里的 \{ \} \% \# 会被 Markdown 的转义规则吃掉（实测：$\left \{ x \right \}$
@@ -274,7 +294,7 @@ export function useMarkdownEditor({ initialMarkdown, markdownInput, onUpdate, on
        * 只动「纯文本」这一份表示：`text/html` 那条路由 renderHTML 负责，
        * 公式仍是带 data-latex 的真节点，粘回本编辑器不会退化成源码。
        */
-      clipboardTextSerializer: clipboardTextSerializer as never,
+      clipboardTextSerializer,
       handlePaste(_view, event) {
         const files = Array.from(event.clipboardData?.files ?? []).filter((f) =>
           f.type.startsWith('image/'),
@@ -305,10 +325,11 @@ export function useMarkdownEditor({ initialMarkdown, markdownInput, onUpdate, on
               // "被转义过的公式原文" \$\frac…\$ 恢复成正常公式）→ protectMathSpans（上占位符）。
               // 中间那步和「打开 .md」那条路**共用同一个函数** —— 否则会出现
               // "打开能救回来、粘贴救不回来"的不一致（踩过）。
+              const macros = text.includes(MACRO_LANGUAGE) ? markdownMacros(text) : documentMacros(instance.state.doc).macros
               const { md, spans } = protectMathSpans(
-                recoverEscapedMath(escapeNonMathDollars(stripExporterHeader(text)), looksLikeFormula),
+                recoverEscapedMath(escapeNonMathDollars(stripExporterHeader(text)), looksLikeFormula), macros,
               )
-              for (const span of spans) span.latex = repairLatex(span.latex, span.display)
+              for (const span of spans) span.latex = repairLatex(span.latex, span.display, macros)
               // 解析出来的是 HTML（公式已经是 data-math-inline 节点）
               const holder = document.createElement('div')
               holder.innerHTML = parser.parse(md, { inline: true })

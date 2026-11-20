@@ -1,0 +1,9 @@
+{
+  "name": "dadealbit-desktop",
+  "version": "1.0.0",
+  "private": true,
+  "main": "main.cjs",
+  "devDependencies": {
+    "electron": "45.4.1"
+  }
+}

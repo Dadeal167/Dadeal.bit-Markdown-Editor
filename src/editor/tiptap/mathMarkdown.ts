@@ -7,8 +7,9 @@
  *   公式注入只认真正的 `$…$`；解析完再把占位符还原成 `$`
  */
 
-import { looksLikeLatex } from '../math/rawMathText'
+import { looksLikeLatex, splitInlineMathPunctuation } from '../math/rawMathText'
 import { repairLatex } from '../math/latexRepair'
+import { EMPTY_MACROS, type MathMacros } from '../math/documentMacros'
 import { unescapeMarkdown } from '../zhihuMarkdown'
 
 const BLOCK_RE = /^\$\$([\s\S]+?)\$\$$/
@@ -29,12 +30,13 @@ const ESCAPED_DOLLAR = '\u0001'
  * 结果就是"同样的坏写法，走不同路径进来，有的修好有的还是红字"。
  * repairLatex 对本来就能渲染的公式是**原样返回**，所以在这里调是安全的。
  */
-function mathElement(latex: string, display: boolean): HTMLElement {
-  const fixed = repairLatex(latex, display)
+function mathElement(latex: string, display: boolean, macros: MathMacros): HTMLElement {
+  const fixed = repairLatex(latex, display, macros)
   const el = document.createElement(display ? 'div' : 'span')
   if (display) el.setAttribute('data-math-block', 'true')
   else el.setAttribute('data-math-inline', 'true')
   el.setAttribute('data-latex', fixed)
+  el.setAttribute('data-math-checked', '')
   el.textContent = fixed
   return el
 }
@@ -50,13 +52,13 @@ function mathElement(latex: string, display: boolean): HTMLElement {
  *
  * 策略和 repairLatex 一致：**只动渲染不出来的公式**，能正常渲染的一个字符都不碰。
  */
-export function repairMathInMarkdown(md: string): string {
+export function repairMathInMarkdown(md: string, macros: MathMacros = EMPTY_MACROS): string {
   if (!md.includes(MATH_INLINE_MARK) && !md.includes(MATH_BLOCK_MARK)) return md
   const block = new RegExp(`${MATH_BLOCK_MARK}([\\s\\S]*?)${MATH_BLOCK_MARK}`, 'g')
   const inline = new RegExp(`${MATH_INLINE_MARK}([\\s\\S]*?)${MATH_INLINE_MARK}`, 'g')
   return md
-    .replace(block, (_m, latex: string) => `${MATH_BLOCK_MARK}${repairLatex(latex, true)}${MATH_BLOCK_MARK}`)
-    .replace(inline, (_m, latex: string) => `${MATH_INLINE_MARK}${repairLatex(latex, false)}${MATH_INLINE_MARK}`)
+    .replace(block, (_m, latex: string) => `${MATH_BLOCK_MARK}${repairLatex(latex, true, macros)}${MATH_BLOCK_MARK}`)
+    .replace(inline, (_m, latex: string) => `${MATH_INLINE_MARK}${repairLatex(latex, false, macros)}${MATH_INLINE_MARK}`)
 }
 
 /**
@@ -186,11 +188,13 @@ export function protectEscapedDollars(md: string): string {
  */
 export function recoverEscapedMath(md: string, looksLikeLatexFormula: (s: string) => boolean): string {
   if (!md.includes('\\$')) return md
-  return md.replace(/\\\$([^$\n]{1,600}?)\\\$/g, (whole: string, rawBody: string) => {
+  const inCode = hasCodeMarkup(md) ? codeMask(md) : null
+  return md.replace(/\\\$([^$\n]{1,600}?)\\\$/g, (whole: string, rawBody: string, index: number) => {
     /* 行尾 `\\$`（LaTeX 换行再收尾）不是"转义公式原文"，让后面的扫描器去处理 */
-    if (rawBody.endsWith('\\')) return whole
+    if (rawBody.endsWith('\\') || inCode?.[index] || inCode?.[index + whole.length - 1]) return whole
     const body = unescapeMarkdown(rawBody).replace(/\\{2,}/g, '\\')
-    return looksLikeLatexFormula(body) ? `$${body}$` : whole
+    const { latex, punctuation } = splitInlineMathPunctuation(body)
+    return looksLikeLatexFormula(latex) ? `$${latex}$${punctuation}` : whole
   })
 }
 
@@ -226,6 +230,7 @@ export interface MathSpan {
 
 /** 本次解析里被保护的公式：protectMathSpans 收集，injectMathIntoDom 还原 */
 let pendingSpans: MathSpan[] = []
+let pendingMacros: MathMacros | undefined
 
 /**
  * 整篇里有没有可能出现"代码区"（围栏 ``` / ~~~ 或行内 `…`）。
@@ -285,7 +290,14 @@ export function codeMask(md: string): Uint8Array {
  * 这样 `$a\\$` 能被正确识别成一个"以换行结尾"的公式，而"原价 \$100" 也不会变成公式。
  * 代码块 / 行内代码里的 `$` 一律不碰。
  */
-export function protectMathSpans(md: string): { md: string; spans: MathSpan[] } {
+export function protectMathSpans(md: string, macros?: MathMacros): { md: string; spans: MathSpan[] } {
+  const protectedMath = replaceMathSpans(md)
+  pendingSpans = protectedMath.spans
+  pendingMacros = macros
+  return protectedMath
+}
+
+export function replaceMathSpans(md: string): { md: string; spans: MathSpan[] } {
   const spans: MathSpan[] = []
   /* 没有代码记号就整段不用建遮罩表（照片内嵌的正文有 2MB+，省下这一趟很实在） */
   const inCode = hasCodeMarkup(md) ? codeMask(md) : null
@@ -329,11 +341,11 @@ export function protectMathSpans(md: string): { md: string; spans: MathSpan[] } 
     const end = md.indexOf('$', i + 1)
     const lineEnd = md.indexOf('\n', i + 1)
     if (end > i && (lineEnd < 0 || end < lineEnd)) {
-      const latex = md.slice(i + 1, end)
+      const { latex, punctuation } = splitInlineMathPunctuation(md.slice(i + 1, end))
       // 内容得"像公式"才算：否则"落单的 $ 和 $ 不成对"这种会变成 latex 是 ` 和 ` 的假公式
       if (latex.trim() && looksLikeLatex(latex)) {
         const idx = spans.push({ latex, display: false }) - 1
-        out += `${INLINE_OPEN}${idx}${INLINE_OPEN}`
+        out += `${INLINE_OPEN}${idx}${INLINE_OPEN}${punctuation}`
         i = end + 1
         continue
       }
@@ -341,11 +353,10 @@ export function protectMathSpans(md: string): { md: string; spans: MathSpan[] } 
     out += '$'
     i += 1
   }
-  pendingSpans = spans // 供解析时的 injectMathIntoDom 还原
   return { md: out, spans }
 }
 /** 解析后：把占位符还原成数学节点（块级的还会把外层空段落去掉） */
-export function restoreMathSpans(root: HTMLElement, spans: MathSpan[]): void {
+export function restoreMathSpans(root: HTMLElement, spans: MathSpan[], macros: MathMacros = EMPTY_MACROS): void {
   if (!spans.length) return
 
   /* 还原前统一过一遍写法修复。
@@ -353,7 +364,7 @@ export function restoreMathSpans(root: HTMLElement, spans: MathSpan[]): void {
      markdown 那条（$…$ → 占位符）和 HTML 那条（外面存好的 data-latex 直接注入），
      两条都得修，否则同一段公式走哪条路进来结果不一样。
      repairLatex **只动渲染不出来的公式**，本来正常的原样返回。 */
-  for (const span of spans) span.latex = repairLatex(span.latex, span.display)
+  for (const span of spans) span.latex = repairLatex(span.latex, span.display, macros)
 
   // 先把"整段只有一个块级占位符"的段落换成块级公式
   root.querySelectorAll('p').forEach((p) => {
@@ -361,7 +372,7 @@ export function restoreMathSpans(root: HTMLElement, spans: MathSpan[]): void {
     const m = new RegExp(`^${BLOCK_OPEN}(\\d+)${BLOCK_OPEN}$`).exec(text)
     if (!m) return
     const span = spans[Number(m[1])]
-    if (span) p.replaceWith(mathElement(span.latex, true))
+    if (span) p.replaceWith(mathElement(span.latex, true, macros))
   })
 
   // 剩下的按文本节点处理（行内 + 混在文字里的块级）
@@ -384,7 +395,7 @@ export function restoreMathSpans(root: HTMLElement, spans: MathSpan[]): void {
     while ((m = re.exec(t.data))) {
       if (m.index > last) frag.appendChild(document.createTextNode(t.data.slice(last, m.index)))
       const span = spans[Number(m[1] ?? m[2])]
-      if (span) frag.appendChild(mathElement(span.latex, span.display))
+      if (span) frag.appendChild(mathElement(span.latex, span.display, macros))
       last = m.index + m[0].length
     }
     if (last < t.data.length) frag.appendChild(document.createTextNode(t.data.slice(last)))
@@ -394,6 +405,10 @@ export function restoreMathSpans(root: HTMLElement, spans: MathSpan[]): void {
 
 /** 公式导入：把解析后的 DOM 里的 $...$ 文本转成数学节点元素（跳过代码块） */
 export function injectMathIntoDom(root: HTMLElement): void {
+  const macros = pendingMacros ?? EMPTY_MACROS
+  const spans = pendingSpans
+  pendingMacros = undefined
+  pendingSpans = []
   // 0) 知乎公式标记：<img src="…/equation?tex=…" alt="LaTeX" eeimg="1|2">
   //    —— 打开"以前导出给知乎的 .md"（或别人从知乎导出的文件）时，公式就是这种 img 标记，
   //    不认出来的话公式全变成图片：不能编辑、也不能再导出（实测用户那篇 166 个公式全是这样）。
@@ -416,12 +431,12 @@ export function injectMathIntoDom(root: HTMLElement): void {
     const display = img.getAttribute('eeimg') === '2'
     // 顺手把坏写法修好（`\left { x \right }` 这种少反斜杠的）：不修的话存进节点里的就是坏写法，
     // 导出的 HTML / PDF 会渲染成 KaTeX 报错红框（用户截图反馈过）
-    latex = repairLatex(latex, display)
+    latex = repairLatex(latex, display, macros)
     // 块级公式：img 独占一段（或本身就在块级位置）时，整段换成块级公式；否则按行内插进文字里
     const holder = img.parentElement
     const alone = !holder || holder.tagName !== 'P' || (holder.textContent ?? '').trim() === ''
-    if (display && alone) (holder && holder.tagName === 'P' ? holder : img).replaceWith(mathElement(latex, true))
-    else img.replaceWith(mathElement(latex, false))
+    if (display && alone) (holder && holder.tagName === 'P' ? holder : img).replaceWith(mathElement(latex, true, macros))
+    else img.replaceWith(mathElement(latex, false, macros))
   })
 
   // 1) 独占一段的块级公式：<p>$$…$$</p> → <div data-math-block>
@@ -429,7 +444,7 @@ export function injectMathIntoDom(root: HTMLElement): void {
     if (p.querySelector('code, pre')) return
     const text = (p.textContent ?? '').trim()
     const m = BLOCK_RE.exec(text)
-    if (m) p.replaceWith(mathElement(m[1].trim(), true))
+    if (m) p.replaceWith(mathElement(m[1].trim(), true, macros))
   })
 
   // 2) 行内公式
@@ -451,7 +466,7 @@ export function injectMathIntoDom(root: HTMLElement): void {
     for (const part of parts) {
       const m = /^\$([^$\n]+)\$$/.exec(part)
       // 和导入那条路保持一致：内容得"像公式"才算，免得把"落单的 $ 和 $ 不成对"变成假公式
-      if (m && looksLikeLatex(m[1])) frag.appendChild(mathElement(m[1], false))
+      if (m && looksLikeLatex(m[1])) frag.appendChild(mathElement(m[1], false, macros))
       else if (part) frag.appendChild(document.createTextNode(part))
     }
     t.replaceWith(frag)
@@ -460,5 +475,5 @@ export function injectMathIntoDom(root: HTMLElement): void {
   // 公式都认完了，这时再把被保护的 \$ 还原成普通字符
   restoreEscapedDollars(root)
   // 以及把"受保护的公式占位符"还原成数学节点
-  restoreMathSpans(root, pendingSpans)
+  restoreMathSpans(root, spans, macros)
 }

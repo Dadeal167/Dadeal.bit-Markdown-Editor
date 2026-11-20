@@ -18,6 +18,9 @@ export interface ShortcutAction {
   def: string | null
 }
 
+export const TOOLBAR_ORB_REVEAL_EVENT = 'dadealbit:reveal-toolbar-orb'
+export const TOOLBAR_TOOLS_EVENT = 'dadealbit:open-tools'
+
 /**
  * 注意：这里的键位串必须与 normalizeEvent 的输出格式完全一致
  * （字母大写、Shift 符号映射回基准键），否则 match 永远匹配不上。
@@ -55,6 +58,9 @@ export const SHORTCUT_ACTIONS: ShortcutAction[] = [
   { id: 'markdownInput', group: '视图', label: '切换 Markdown 输入', def: 'Mod-Shift-K' },
   { id: 'outline', group: '视图', label: '大纲', def: 'Mod-Alt-O' },
   { id: 'fullscreen', group: '视图', label: '全屏', def: 'Mod-Shift-F' },
+  ...(__BUILD_MODE__ === 'effect' ? [{ id: 'toolbarOrb', group: '视图' as const, label: '显示悬浮球', def: 'Mod-Alt-T' }] : []),
+  ...(__BUILD_MODE__ === 'effect' ? [{ id: 'readingMode', group: '视图' as const, label: '切换阅读模式', def: 'Mod-Alt-R' }] : []),
+  ...(__BUILD_MODE__ === 'effect' ? [{ id: 'tools', group: '视图' as const, label: '搜索功能', def: 'Mod-Alt-K' }] : []),
   { id: 'shortcuts', group: '视图', label: '快捷键设置', def: 'Mod-/' },
 ]
 

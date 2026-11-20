@@ -21,9 +21,9 @@ import { chromium } from 'playwright-core'
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
-const APP = resolve('Dadealbit Markdown 编辑器.html')
+const APP = resolve(process.env.DADEALBIT_TEST_HTML ?? 'Dadealbit Markdown 编辑器.html')
 if (!existsSync(APP)) {
-  console.error('先跑 pnpm build:pure')
+  console.error('先跑 pnpm build')
   process.exit(1)
 }
 const OUT = resolve('.probe', 'out')
@@ -50,6 +50,7 @@ const MD = [
 
 const browser = await chromium.launch({ channel: 'msedge', headless: true })
 const page = await browser.newPage({ viewport: { width: 1280, height: 860 } })
+await page.addInitScript(() => { window.showOpenFilePicker = undefined })
 const errors = []
 page.on('pageerror', (e) => errors.push(String(e).slice(0, 150)))
 await page.goto('file:///' + APP.replace(/\\/g, '/'), { waitUntil: 'load', timeout: 60000 })
@@ -81,8 +82,8 @@ const afterImport = await probe()
 /* ---------- a. 载入时自动修 ---------- */
 check('打开带坏写法的 .md 后，屏幕上没有渲染失败的公式', afterImport.err === 0, `katex-error ${afterImport.err} 个`)
 check(
-  '提示条说明"导入时自动修好了 N 个公式"（让用户知道发生过什么）',
-  afterImport.barVisible && /导入时自动修好了\s*\d+\s*个公式/.test(afterImport.barText),
+  '导入后提示已修复的公式数量',
+  afterImport.barVisible && /(?:已修复|导入时自动修好了)\s*\d+\s*(?:处公式语法|个公式)/.test(afterImport.barText),
   JSON.stringify(afterImport.barText),
 )
 
@@ -113,7 +114,7 @@ check('（前置）成功把第一个公式改回坏写法', forced)
 await page.locator('.zh-btn[title="更多"]').click()
 await page.waitForTimeout(250)
 const checkItem = page.locator('.zh-menu button', { hasText: '检查图片与公式' }).first()
-check('菜单里有「检查图片与公式（打不开就修）」', (await checkItem.count()) > 0)
+check('菜单明确说明会自动修复公式', (await checkItem.innerText()).includes('自动修复公式'))
 await checkItem.click()
 await page.waitForTimeout(900)
 
@@ -125,7 +126,7 @@ check(
 )
 check(
   '修完会告诉用户修了几个',
-  /修好了\s*\d+\s*个公式/.test(afterMenu.barText),
+  /(?:已修复|修好了)\s*\d+\s*个公式/.test(afterMenu.barText),
   JSON.stringify(afterMenu.barText),
 )
 
@@ -150,10 +151,40 @@ if (hardCase) {
   const hard = await probe()
   check(
     '自动修不了的公式会**明说**要手动改（不假装没事）',
-    /手动改|自动修不了/.test(hard.barText) || /手动改|自动修不了/.test(await page.locator('.zh-fixbar').textContent()),
+    /手动编辑|手动改/.test(hard.barText) || /手动编辑|手动改/.test(await page.locator('.zh-fixbar').textContent()),
     JSON.stringify(hard.barText),
   )
+  check('只有手动修复项时不展示一键修复按钮', await page.getByTitle('一键修复公式', { exact: true }).count() === 0)
 }
+
+/* ---------- e. 弹窗里的修复预览、确认写回与中文找符号 ---------- */
+const dialog = page.getByRole('dialog', { name: '公式编辑器' })
+const input = dialog.locator('.zh-mathsource')
+await page.locator('.zh-btn[title="公式"]').click()
+const originalTex = '\\[\\begin{align*}\na &= b \\\\\nc &= d\n\\end{align*}\\]'
+await input.fill(originalTex)
+await dialog.getByRole('button', { name: '应用修复' }).waitFor()
+check('预览先用修复后的多行公式，输入框保留原文',
+  (await input.inputValue()) === originalTex && await dialog.locator('.zh-formula__preview .katex').count() === 1)
+await dialog.getByRole('button', { name: '确认', exact: true }).click()
+check('确认把修好的 TeX 写进文档节点', (await probe()).stored.some(tex => tex?.startsWith('\\begin{aligned}') && tex.includes('c &= d')))
+
+await page.locator('.zh-btn[title="公式"]').click()
+await dialog.getByRole('button', { name: '找符号', exact: true }).click()
+await dialog.getByRole('searchbox', { name: '搜索公式符号' }).fill('分数')
+await dialog.getByRole('button', { name: '分数', exact: true }).click()
+await page.waitForFunction(() => {
+  const input = document.querySelector('.zh-mathsource')
+  return input === document.activeElement && input.value.includes('\\frac{}{}')
+    && input.selectionStart === input.value.indexOf('{}') + 1
+}, null, { timeout: 4000 })
+check('中文找到分数模板，光标落在第一个空位', await input.evaluate(element =>
+  element.value.includes('\\frac{}{}') && element.selectionStart === element.value.indexOf('{}') + 1))
+await dialog.getByRole('button', { name: '找符号', exact: true }).click()
+check('最近使用可以再次插入已选过的符号', await dialog.getByRole('button', { name: '分数', exact: true }).isVisible())
+await dialog.getByRole('searchbox', { name: '搜索公式符号' }).fill('\\sum')
+check('TeX 命令也能找到符号', await dialog.locator('.zh-mathpanel .zh-symbol[data-latex^="\\\\sum"]').count() > 0)
+await dialog.getByRole('button', { name: '取消', exact: true }).click()
 
 check('全程没有 JS 报错', errors.length === 0, errors.slice(0, 2).join(' | '))
 

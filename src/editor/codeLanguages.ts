@@ -101,7 +101,10 @@ const ALIASES: Record<string, string> = {
 }
 
 /** 按字母顺序（不区分大小写）排好的清单；运行时缺哪个语法就自动去掉哪个 */
-export const CODE_LANGUAGES: CodeLanguage[] = ALL.filter((l) => l.value === '' || AVAILABLE.has(l.value)).sort((a, b) =>
+const EXTRA: CodeLanguage[] = __BUILD_MODE__ === 'effect'
+  ? [{ label: 'LaTeX 宏定义', value: 'latex-macros' }, { label: 'Mermaid', value: 'mermaid' }, { label: 'BibTeX 文献库', value: 'bibtex' }]
+  : []
+export const CODE_LANGUAGES: CodeLanguage[] = [...ALL.filter((l) => l.value === '' || AVAILABLE.has(l.value)), ...EXTRA].sort((a, b) =>
   a.label.toLowerCase().localeCompare(b.label.toLowerCase()),
 )
 

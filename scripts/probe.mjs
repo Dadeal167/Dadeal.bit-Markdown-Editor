@@ -132,7 +132,7 @@ try {
     !!modalBox && Math.round(modalBox.width) === 880 && Math.round(modalBox.height) === 660,
     modalBox ? `${Math.round(modalBox.width)}×${Math.round(modalBox.height)}` : '未找到',
   )
-  const catCount = await page.locator('.zh-mathcat').count()
+  const catCount = await page.locator('.zh-mathcat:not(.zh-mathcat--search)').count()
   record('分类 10 个', catCount === 10, `实际 ${catCount} 个`)
   record('快捷碎片行已移除', (await page.locator('.zh-mathchip').count()) === 0)
   record('可视化模式已移除（只剩输入框）', (await page.locator('.zh-mathsource').count()) === 1)

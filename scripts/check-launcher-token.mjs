@@ -14,7 +14,7 @@ import { chromium } from 'playwright-core'
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 
-const APP = resolve('Dadealbit Markdown 编辑器.html')
+const APP = resolve(process.env.DADEALBIT_TEST_HTML ?? 'Dadealbit Markdown 编辑器.html')
 if (!existsSync(APP)) {
   console.error('先跑 pnpm build')
   process.exit(1)
@@ -59,7 +59,7 @@ const panel = await page.evaluate(() => ({
   selfCheckBtn: !!document.querySelector('.zh-modal--zhihu button[title*="临时草稿"]'),
 }))
 check('面板里助手地址已填好', panel.addr === 'http://127.0.0.1:5198', panel.addr)
-check('面板拿这个令牌去探测了（探测失败=没助手，属正常）', /没检测到助手|助手已连接/.test(panel.state), panel.state.slice(0, 30))
+check('助手连接检测已完成', /未连接知乎助手|没检测到助手|助手已连接/.test(panel.state), panel.state.slice(0, 30))
 check('面板上有「检查一下能不能用（自检）」按钮', panel.selfCheckBtn)
 
 /* ---------- 2. 没有 hash 时：原有配置不能被弄丢 ---------- */

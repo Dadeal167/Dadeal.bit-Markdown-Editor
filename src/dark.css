@@ -11,11 +11,11 @@
   --zh-blue: #4c9aff;
   --zh-blue-hover: #6cb0ff;
   --zh-blue-soft: #1b2c45;
-  --zh-text: #e6e8ea;
-  --zh-secondary: #98a2b3;
+  --zh-text: #ffffff;
+  --zh-secondary: #d2d5d9;
   --zh-icon: #c9cdd4;
   --zh-hover: #272b31;
-  --zh-placeholder: #6b7480;
+  --zh-placeholder: #c7ccd2;
   --zh-warn: #e8a33d;
 }
 
@@ -89,14 +89,8 @@
   color: var(--zh-text);
 }
 
-/* 深色下把"太暗的文字颜色"显示成主题文字色（近白）。
-   背景：工具栏「文字颜色」会把 <span style="color:#1f2329"> 写进文档，深色底上就是黑字看不见。
-   .zh-dim-color 是 readableColors.ts 那个 decoration 打上来的类（属于视图层、不写进文档，
-   也不进导出的 HTML）；!important 是为了压过作者那份行内 style。两种嵌套顺序都兜住：
-   decoration 的 span 可能在颜色 span 外面，也可能在里面。 */
-[data-theme='dark'] .zh-prose .zh-dim-color,
-[data-theme='dark'] .zh-prose .zh-dim-color span {
-  color: var(--zh-text) !important;
+[data-theme='dark'] .editor-card {
+  --paper-block: var(--doc-block, var(--doc-block-dark));
 }
 
 [data-theme='dark'] .zh-menu__item:hover,
@@ -215,27 +209,17 @@
 }
 
 /* 正文排版 */
-[data-theme='dark'] .zh-prose code {
-  background: #23262c;
-}
-
 [data-theme='dark'] .zh-prose pre {
-  background: #1a1d21;
   border-color: var(--zh-line);
 }
 
 [data-theme='dark'] .zh-prose blockquote {
-  color: var(--zh-secondary);
   border-left-color: #3a3f47;
 }
 
 [data-theme='dark'] .zh-prose th,
 [data-theme='dark'] .zh-prose td {
   border-color: #3a3f47;
-}
-
-[data-theme='dark'] .zh-prose th {
-  background: #23262c;
 }
 
 [data-theme='dark'] .zh-prose hr {

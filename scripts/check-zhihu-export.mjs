@@ -18,7 +18,7 @@ import { resolve } from 'node:path'
  */
 export const TEST_COUNT = 36
 
-const APP = resolve('Dadealbit Markdown 编辑器.html')
+const APP = resolve(process.env.DADEALBIT_TEST_HTML ?? 'Dadealbit Markdown 编辑器.html')
 if (!existsSync(APP)) {
   console.error('先跑 pnpm build')
   process.exit(1)
@@ -76,6 +76,8 @@ writeFileSync(srcPath, srcMd, 'utf-8')
 
 const browser = await chromium.launch({ channel: 'msedge', headless: true })
 const page = await browser.newPage({ viewport: { width: 1280, height: 950 }, acceptDownloads: true })
+await page.addInitScript(() => { window.showOpenFilePicker = undefined })
+await page.route('https://pic*.zhimg.com/*.jpg', route => route.fulfill({ contentType: 'image/png', body: Buffer.from(PNG, 'base64') }))
 const errs = []
 page.on('pageerror', (e) => errs.push(String(e).slice(0, 120)))
 await page.goto(app, { waitUntil: 'load', timeout: 60000 })
@@ -110,11 +112,12 @@ check(
 // 打开「知乎」面板 → 导出
 await page.locator('.zh-btn[title="知乎"]').click()
 await page.waitForTimeout(600)
-check('面板里有「导出知乎 .md」按钮', (await page.locator('.zh-zhihu__export button', { hasText: '导出知乎 .md' }).count()) > 0)
+const exportButton = page.locator('.zh-zhihu__export .zh-pill--primary')
+check('面板中可导出知乎 Markdown', (await exportButton.count()) > 0)
 
 const [download] = await Promise.all([
   page.waitForEvent('download', { timeout: 15000 }),
-  page.locator('.zh-zhihu__export button', { hasText: '导出知乎 .md' }).click(),
+  exportButton.click(),
 ])
 const saved = resolve(DL, 'out.md')
 await download.saveAs(saved)
@@ -185,7 +188,7 @@ check(
 
 const [download2] = await Promise.all([
   page.waitForEvent('download', { timeout: 15000 }),
-  page.locator('.zh-zhihu__export button', { hasText: '导出知乎 .md' }).click(),
+  exportButton.click(),
 ])
 const saved2 = resolve(DL, 'out2.md')
 await download2.saveAs(saved2)
@@ -225,7 +228,7 @@ await page.locator('.zh-btn[title="知乎"]').click()
 await page.waitForTimeout(500)
 const [download3] = await Promise.all([
   page.waitForEvent('download', { timeout: 15000 }),
-  page.locator('.zh-zhihu__export button', { hasText: '导出知乎 .md' }).click(),
+  exportButton.click(),
 ])
 const saved3 = resolve(DL, 'out3.md')
 await download3.saveAs(saved3)
@@ -261,7 +264,7 @@ await page.locator('.zh-btn[title="知乎"]').click()
 await page.waitForTimeout(500)
 const [dl4] = await Promise.all([
   page.waitForEvent('download', { timeout: 20000 }).catch(() => null),
-  page.locator('.zh-zhihu__export button', { hasText: '导出知乎 .md' }).click(),
+  exportButton.click(),
 ])
 const saved4 = resolve(DL, 'local-only.md')
 if (dl4) await dl4.saveAs(saved4)
@@ -275,7 +278,7 @@ check('公式照常转换（缺图不影响公式）', md4.includes('equation?te
 check('并且提示按"警告"样式显示', /result--bad/.test(note4Class), note4Class)
 check(
   '提示里说清"会丢图 + 两条出路 + 推荐草稿箱"',
-  /没换成公开网址/.test(note4) && /开始使用\.bat/.test(note4) && /图床设置/.test(note4) && /存到草稿箱/.test(note4),
+  /缺少公开链接|没换成公开网址/.test(note4) && /开始使用\.bat/.test(note4) && /图床设置/.test(note4) && /存到草稿箱/.test(note4),
   note4.slice(0, 140).replace(/\n/g, ' '),
 )
 

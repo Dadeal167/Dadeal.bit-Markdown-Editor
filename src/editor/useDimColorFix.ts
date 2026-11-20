@@ -15,7 +15,7 @@ import { watchSystemTheme, type Theme } from './theme'
  * 用 queueMicrotask 是为了等 ZhihuEditor 里那个 `applyTheme('system')` 先跑完
  * （它负责改 `<html data-theme>`，decoration 算的时候要读到新值）。
  */
-export function useDimColorFix(theme: Theme, editor: Editor | null): void {
+export function useDimColorFix(theme: Theme, paperColor: string, editor: Editor | null): void {
   useEffect(() => {
     if (!editor || editor.isDestroyed) return
     const push = () => {
@@ -23,7 +23,15 @@ export function useDimColorFix(theme: Theme, editor: Editor | null): void {
       editor.view.dispatch(editor.state.tr.setMeta('dimColorFixTheme', Date.now()))
     }
     push()
-    if (theme !== 'system') return
-    return watchSystemTheme(() => queueMicrotask(push))
-  }, [theme, editor])
+    const observer = new MutationObserver(push)
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['data-paper-tone', 'data-memory-lobby', 'data-lobby-material'],
+    })
+    const unwatch = theme === 'system' ? watchSystemTheme(() => queueMicrotask(push)) : undefined
+    return () => {
+      observer.disconnect()
+      unwatch?.()
+    }
+  }, [theme, paperColor, editor])
 }

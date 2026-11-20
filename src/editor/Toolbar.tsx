@@ -1,58 +1,11 @@
-import { Fragment, useEffect, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { EditorApi } from './types'
-import {
-  IconClearFormat,
-  IconCode,
-  IconFormula,
-  IconHr,
-  IconImage,
-  IconLink,
-  IconMore,
-  IconOpen,
-  IconOutline,
-  IconQuote,
-  IconRedo,
-  IconSearch,
-  IconTable,
-  IconTheme,
-  IconUL,
-  IconUndo,
-  IconVideo,
-} from './icons'
-
-export interface ToolbarHandlers {
-  openFormula(): void
-  openTable(): void
-  openLink(): void
-  openVideo(): void
-  openHelp(): void
-  openShortcuts(): void
-  /** 「更多 → 使用反馈」：打开反馈弹窗（里面能一键发邮件给作者） */
-  openFeedback(): void
-  /** 打开搜索框（工具栏「搜索」与 Ctrl+F 都走它） */
-  openSearch(): void
-  /** 打开「存到知乎草稿箱」面板 */
-  openZhihu(): void
-  pickImage(): void
-  /** 体检当前文档：图片打不开 / 公式渲染不出来 */
-  checkDocument(): void
-  /** 公式不对时导出诊断包（每个公式存着的写法 + 操作历史），发给作者定位 */
-  exportMathDiag(): void
-}
-
-interface ToolbarItem {
-  key: string
-  label: string
-  icon?: ReactNode
-  /** 鼠标提示，缺省用 label */
-  title?: string
-  /** 自定义节点（表格里放下拉面板用），给了就直接渲染它 */
-  render?: ReactNode
-  onClick?: () => void
-  menu?: ToolbarItem[]
-  active?: boolean
-}
+import { useToolbarOrb } from './useToolbarOrb'
+import { displayKey, shortcuts, TOOLBAR_ORB_REVEAL_EVENT, TOOLBAR_TOOLS_EVENT } from './shortcuts'
+import type { SaveFormat } from './publication/saveOptions'
+import ToolbarButton from './toolbar/ToolbarButton'
+import { toolbarGroups, type ToolbarHandlers, type ToolbarMode } from './toolbar/toolbarItems'
 
 interface Props {
   api: EditorApi
@@ -61,182 +14,160 @@ interface Props {
   extraLeading?: ReactNode
   /** 排版（字号/字体/颜色）下拉，放在排版按钮那一组里 */
   typographyMenu?: ReactNode
+  /** 特效设置面板（纯净版构建里为 null，那个按钮就整块不出现） */
+  effectPanel?: ReactNode
   /** 「保存」按钮：点开选格式（Markdown / 知乎 / 通用版 / 网页 / PDF） */
   saveMenu?: ReactNode
+  onDismissPanels?(): void
+  panelsOpen?: boolean
+  onOpenEffects?: () => void
+  onSaveAction(format: SaveFormat): void
+  hasLocalFile: boolean
 }
 
-function ToolbarButton({ item, afterClick }: { item: ToolbarItem; afterClick: () => void }) {
-  const [open, setOpen] = useState(false)
-  const ref = useRef<HTMLDivElement>(null)
+const TOOLBAR_MODE_KEY = 'dadealbit-toolbar-mode-v1'
+
+function loadToolbarMode(): ToolbarMode {
+  try { return __BUILD_MODE__ === 'effect' && localStorage.getItem(TOOLBAR_MODE_KEY) === 'orb' ? 'orb' : 'bar' }
+  catch { return 'bar' }
+}
+
+export default function Toolbar({ api, handlers, extraLeading, typographyMenu, effectPanel, saveMenu, onDismissPanels,
+  panelsOpen, onOpenEffects, onSaveAction, hasLocalFile }: Props) {
+  const [mode, setMode] = useState(loadToolbarMode)
+  const [expanded, setExpanded] = useState(false)
+  const [orbVisible, setOrbVisible] = useState(true)
+  const [orbActivity, setOrbActivity] = useState(0)
+  const [openMenu, setOpenMenu] = useState<string>()
+  const dock = useRef<HTMLDivElement>(null)
+  const orb = useRef<HTMLButtonElement>(null)
+  const dismissPanels = useRef(onDismissPanels)
+  dismissPanels.current = onDismissPanels
+  const collapse = useCallback((focusOrb = false) => {
+    setExpanded(false)
+    setOpenMenu(undefined)
+    dismissPanels.current?.()
+    if (focusOrb) requestAnimationFrame(() => orb.current?.focus({ preventScroll: true }))
+  }, [])
+  const { resetPosition, dragging, pressing, style: orbStyle, ...orbEvents } = useToolbarOrb(mode === 'orb', orb, collapse,
+    () => expanded ? collapse() : setExpanded(true))
+  const revealOrb = useCallback(() => { setOrbVisible(true); setOrbActivity((value) => value + 1) }, [])
 
   useEffect(() => {
-    if (!open) return
-    const close = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    if (mode === 'orb') revealOrb()
+  }, [mode, revealOrb])
+
+  useEffect(() => {
+    if (mode !== 'orb' || expanded || dragging || pressing || !orbVisible) return
+    const timer = window.setTimeout(() => {
+      // 键盘焦点仍在按钮上时保留它，避免 Tab / Enter 操作中途丢失焦点。
+      if (document.activeElement !== orb.current) setOrbVisible(false)
+    }, 3000)
+    return () => window.clearTimeout(timer)
+  }, [mode, expanded, dragging, pressing, orbVisible, orbActivity])
+
+  useEffect(() => {
+    if (__BUILD_MODE__ !== 'effect') return
+    document.documentElement.dataset.toolbarMode = mode
+    return () => { delete document.documentElement.dataset.toolbarMode }
+  }, [mode])
+
+  useEffect(() => {
+    if (mode !== 'orb' || !expanded) return
+    const outside = (event: PointerEvent) => {
+      if (!dock.current?.contains(event.target as Node)) collapse()
     }
-    const esc = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setOpen(false)
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || document.querySelector('.zh-modal-mask, .zh-search')) return
+      if (dock.current?.querySelector('.zh-menu, .zh-docmenu, .zh-typomenu, .zh-fx:not([hidden])')) return
+      event.preventDefault()
+      collapse(true)
     }
-    document.addEventListener('mousedown', close)
-    document.addEventListener('keydown', esc)
+    document.addEventListener('pointerdown', outside)
+    // 子菜单先处理 Escape，下一次 Escape 收起工具栏。
+    document.addEventListener('keydown', escape)
     return () => {
-      document.removeEventListener('mousedown', close)
-      document.removeEventListener('keydown', esc)
+      document.removeEventListener('pointerdown', outside)
+      document.removeEventListener('keydown', escape)
     }
-  }, [open])
+  }, [collapse, expanded, mode])
+
+  const changeMode = (next: ToolbarMode) => {
+    dismissPanels.current?.()
+    setMode(next)
+    setExpanded(false)
+    setOpenMenu(undefined)
+    try { localStorage.setItem(TOOLBAR_MODE_KEY, next) } catch { /* 当前会话仍可切换。 */ }
+  }
+
+  useEffect(() => {
+    if (__BUILD_MODE__ !== 'effect') return
+    const show = () => {
+      if (mode !== 'orb') changeMode('orb')
+      revealOrb()
+    }
+    window.addEventListener(TOOLBAR_ORB_REVEAL_EVENT, show)
+    return () => window.removeEventListener(TOOLBAR_ORB_REVEAL_EVENT, show)
+  }, [mode, revealOrb])
+
+  useEffect(() => {
+    if (mode === 'orb' && panelsOpen) setExpanded(true)
+  }, [mode, panelsOpen])
+
+  useEffect(() => {
+    if (__BUILD_MODE__ !== 'effect') return
+    const openTools = () => {
+      dismissPanels.current?.()
+      if (mode === 'orb') setExpanded(true)
+      setOpenMenu('more')
+    }
+    window.addEventListener(TOOLBAR_TOOLS_EVENT, openTools)
+    return () => window.removeEventListener(TOOLBAR_TOOLS_EVENT, openTools)
+  }, [mode])
+
+  const groups = toolbarGroups({ api, handlers, mode, changeMode, revealOrb, resetPosition, typographyMenu, saveMenu,
+    effectPanel, onOpenEffects, onSaveAction, hasLocalFile })
 
   return (
-    <div className="zh-tb-wrap" ref={ref}>
-      <button
-        type="button"
-        className={`zh-btn${item.active ? ' zh-btn--active' : ''}`}
-        title={item.title ?? item.label}
-        // 阻止 mousedown 默认行为：保持编辑器焦点与选区不被抢走
-        onMouseDown={(e) => e.preventDefault()}
-        onClick={() => {
-          if (item.menu) {
-            setOpen((o) => !o)
-          } else {
-            item.onClick?.()
-            setOpen(false)
-            afterClick()
-          }
-        }}
-      >
-        {item.icon}
-        <span className="zh-btn__label">{item.label}</span>
-      </button>
-      {item.menu && open && (
-        <div className="zh-menu">
-          {item.menu.map((m) => (
-            <button
-              key={m.key}
-              type="button"
-              className={`zh-menu__item${m.active ? ' zh-menu__item--on' : ''}`}
-              data-key={m.key}
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={() => {
-                m.onClick?.()
-                setOpen(false)
-                afterClick()
-              }}
-            >
-              <span>{m.label}</span>
-              {m.active && <span className="zh-menu__check">✓</span>}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  )
-}
-
-export default function Toolbar({ api, handlers, extraLeading, typographyMenu, saveMenu }: Props) {
-  const groups: ToolbarItem[][] = [
-    [
-      { key: 'open', label: '打开', icon: <IconOpen />, onClick: () => api.openMarkdownFile() },
-      // 「保存」保持原样，只是点下去先问格式（原来单独的「导出」按钮并进这里了）
-      { key: 'save', label: '保存', render: saveMenu },
-    ],
-    [
-      { key: 'undo', label: '撤销', icon: <IconUndo />, onClick: () => api.undo() },
-      { key: 'redo', label: '重做', icon: <IconRedo />, onClick: () => api.redo() },
-      { key: 'clear', label: '清除格式', icon: <IconClearFormat />, onClick: () => api.clearFormat() },
-    ],
-    [
-      {
-        key: 'h',
-        label: '标题',
-        icon: <span className="zh-glyph">H</span>,
-        menu: [
-          { key: 'h1', label: '一级标题', onClick: () => api.setHeading(1) },
-          { key: 'h2', label: '二级标题', onClick: () => api.setHeading(2) },
-          { key: 'h3', label: '三级标题', onClick: () => api.setHeading(3) },
-          { key: 'p', label: '正文', onClick: () => api.setParagraph() },
-        ],
-      },
-      { key: 'bold', label: '加粗', icon: <span className="zh-glyph zh-glyph--b">B</span>, onClick: () => api.toggleBold() },
-      { key: 'italic', label: '斜体', icon: <span className="zh-glyph zh-glyph--i">I</span>, onClick: () => api.toggleItalic() },
-      typographyMenu ? { key: 'typography', label: '字体', render: typographyMenu } : null,
-    ].filter(Boolean) as ToolbarItem[],
-    [
-      {
-        key: 'list',
-        label: '列表',
-        icon: <IconUL />,
-        menu: [
-          { key: 'ul', label: '无序列表', onClick: () => api.toggleList() },
-          { key: 'ol', label: '有序列表', onClick: () => api.toggleOrderedList() },
-        ],
-      },
-      { key: 'quote', label: '引用', icon: <IconQuote />, onClick: () => api.toggleQuote() },
-      { key: 'hr', label: '分割线', icon: <IconHr />, onClick: () => api.insertHr() },
-      { key: 'code', label: '代码块', icon: <IconCode />, onClick: () => api.toggleCodeBlock() },
-    ],
-    [
-      { key: 'image', label: '图片', icon: <IconImage />, onClick: () => handlers.pickImage() },
-      { key: 'video', label: '视频', icon: <IconVideo />, onClick: () => handlers.openVideo() },
-      { key: 'link', label: '链接', icon: <IconLink />, onClick: () => handlers.openLink() },
-      { key: 'math', label: '公式', icon: <IconFormula />, onClick: () => handlers.openFormula() },
-      { key: 'table', label: '表格', icon: <IconTable />, onClick: () => handlers.openTable() },
-    ],
-    [
-      { key: 'outline', label: '大纲', icon: <IconOutline />, onClick: () => api.toggleOutline() },
-      // 搜索单独一个按钮（Ctrl+F 也走它）：找文档里的字、逐条跳过去
-      { key: 'search', label: '搜索', icon: <IconSearch />, onClick: () => handlers.openSearch() },
-      {
-        key: 'theme',
-        label: '主题',
-        icon: <IconTheme />,
-        menu: [
-          { key: 'light', label: '浅色', onClick: () => api.setTheme('light'), active: api.theme === 'light' },
-          { key: 'dark', label: '深色', onClick: () => api.setTheme('dark'), active: api.theme === 'dark' },
-          { key: 'system', label: '跟随系统', onClick: () => api.setTheme('system'), active: api.theme === 'system' },
-        ],
-      },
-      {
-        key: 'zhihu',
-        label: '知乎',
-        icon: <span className="zh-glyph">知</span>,
-        onClick: () => handlers.openZhihu(),
-      },
-      {
-        key: 'more',
-        label: '更多',
-        icon: <IconMore />,
-        menu: [
-          // 这里原来有「存一份自己看的 .md」和「Markdown 输入开 / 关」：
-          // 前者收进了「保存」菜单；后者底部状态栏本来就有开关（点一下就行），所以也撤了
-          { key: 'check-doc', label: '检查图片与公式（打不开就修）', onClick: () => handlers.checkDocument() },
-          /* 公式出问题时点这个：把现场（每个公式存着的写法 + 操作历史）存成文件发给作者。
-             为什么需要它：用户报过三次"公式坏了"，每次我都拿不到坏样本、只能靠推理，
-             而**没有数据的推理只会产出"合理的错误"**。 */
-          { key: 'math-diag', label: '导出公式诊断（公式不对时点这个）', onClick: () => handlers.exportMathDiag() },
-          { key: 'feedback', label: '使用反馈（发邮件给作者）', onClick: () => handlers.openFeedback() },
-          { key: 'fullscreen', label: '全屏', onClick: () => api.toggleFullscreen() },
-          { key: 'help', label: '快捷键帮助', onClick: () => handlers.openHelp() },
-          { key: 'shortcuts', label: '自定义快捷键', onClick: () => handlers.openShortcuts() },
-          { key: 'reset-doc', label: '重置当前文档为示例内容', onClick: () => api.resetCurrentDoc() },
-        ],
-      },
-    ],
-  ]
-
-  return (
-    <div className="zh-toolbar">
+    <div ref={dock} className={`zh-toolbar-dock zh-toolbar-dock--${mode}`}>
+      {mode === 'orb' && <button ref={orb} type="button" className="zh-toolbar-orb"
+        style={orbStyle} data-dragging={dragging || undefined} {...orbEvents}
+        data-idle-hidden={!orbVisible && !expanded || undefined} aria-hidden={!orbVisible && !expanded || undefined}
+        tabIndex={orbVisible || expanded ? 0 : -1}
+        onPointerMove={(event) => { orbEvents.onPointerMove(event); revealOrb() }}
+        onPointerDown={(event) => { orbEvents.onPointerDown(event); revealOrb() }}
+        onPointerUp={(event) => { orbEvents.onPointerUp(event); revealOrb() }}
+        onFocus={revealOrb} onBlur={revealOrb}
+        title={`${expanded ? '收起工具栏' : '展开工具栏'} · 空闲 3 秒后隐藏，${displayKey(shortcuts.bindings().toolbarOrb)} 显示`}
+        aria-label={expanded ? '收起工具栏' : '展开工具栏'}
+        aria-description="点击展开或收起工具栏，拖动调整位置；空闲 3 秒后隐藏，可用快捷键重新显示。"
+        aria-expanded={expanded} aria-controls="zh-main-toolbar"
+        onMouseDown={(event) => event.preventDefault()}>
+        <span aria-hidden="true" className="zh-toolbar-orb__mark"><i /><i /><i /><i /></span>
+      </button>}
+      <div id="zh-main-toolbar" className="zh-toolbar" hidden={mode === 'orb' && !expanded}
+        role="region" aria-label="编辑工具栏">
+      {mode === 'orb' && <div className="zh-toolbar__head">
+        <strong>编辑工具栏</strong>
+        <button type="button" className="zh-btn-plain" onMouseDown={(event) => event.preventDefault()}
+          onClick={() => collapse(true)} aria-label="收起编辑工具栏">收起 ✕</button>
+      </div>}
       <div className="zh-toolbar__inner">
         {groups.map((group, gi) => (
           <div className="zh-toolbar__group" key={gi}>
             {gi === 0 && extraLeading}
             {group.map((item) =>
               item.render ? (
-                <Fragment key={item.key}>{item.render}</Fragment>
+                <Fragment key={item.key === 'save' ? item.key + ':' + expanded : item.key}>{item.render}</Fragment>
               ) : (
-                <ToolbarButton key={item.key} item={item} afterClick={() => api.focus()} />
+                <ToolbarButton key={item.key + ':' + expanded} item={item} open={openMenu === item.key}
+                  onOpenChange={(open) => setOpenMenu((previous) => open ? item.key : previous === item.key ? undefined : previous)}
+                  afterClick={api.focus} />
               ),
             )}
           </div>
         ))}
+      </div>
       </div>
     </div>
   )

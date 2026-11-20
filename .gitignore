@@ -7,8 +7,10 @@ dist
 .probe
 .zhihu-publish-output
 
-# 自己用的那个版本（带鼠标特效）不进仓库——对外只发布纯净版
+# 可选的本机壁纸素材和旧文件名
 Dadealbit Markdown 编辑器-特效版.html
+src/editor/effects/lobby-assets/
+/wenzhangshili/
 
 # 内部文档（开发笔记 / 交接单：含特效实现说明与本地排查记录），只留在本地
 NEXT.md

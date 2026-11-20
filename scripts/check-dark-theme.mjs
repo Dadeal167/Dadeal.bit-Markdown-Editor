@@ -18,7 +18,7 @@ import { resolve } from 'node:path'
 
 const APP = resolve('Dadealbit Markdown 编辑器.html')
 if (!existsSync(APP)) {
-  console.error('先跑 pnpm build:pure（这个套件量的是纯净版产物）')
+  console.error('先跑 pnpm build（这个套件量的是纯净版产物）')
   process.exit(1)
 }
 const OUT = resolve('.probe', 'out')

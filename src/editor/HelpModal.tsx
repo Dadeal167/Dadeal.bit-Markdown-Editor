@@ -32,19 +32,25 @@ const KEY_ROWS: [string, string][] = [
   ['markdownInput', '切换 Markdown 输入'],
   ['outline', '大纲'],
   ['fullscreen', '全屏'],
+  ...(__BUILD_MODE__ === 'effect' ? [['toolbarOrb', '显示悬浮球'] as [string, string]] : []),
+  ...(__BUILD_MODE__ === 'effect' ? [['readingMode', '切换阅读模式'] as [string, string]] : []),
+  ...(__BUILD_MODE__ === 'effect' ? [['tools', '搜索功能'] as [string, string]] : []),
   ['shortcuts', '快捷键设置'],
 ]
 
 const TIPS: [string, string][] = [
-  ['公式', '点顶栏「公式」，左边全是图形按钮，点一下就填进去；也可以自己敲 TeX'],
-  ['再改公式', '正文里点一下公式，就能重新打开编辑'],
-  ['图片', '点「图片」选文件，或者直接 Ctrl+V 粘贴截图（大于 400KB 会自动压缩）'],
-  ['视频', '点「视频」粘贴 B 站 / YouTube 链接'],
-  ['表格', '光标点进单元格，表格上方会浮出加行 / 加列 / 删除等操作'],
-  ['搜索', 'Ctrl+F（或点顶栏「搜索」）：输入就出结果，回车跳下一条，Esc 关掉'],
-  ['用了多久', '左下角状态栏有「用时」；「更多 → 使用反馈」可以把字数与用时一起发给作者'],
-  ['Markdown 输入', '底部开关：开着时输入 # - ** 会自动变格式，粘贴的 Markdown 也会转换'],
-  ['自动保存', '写的内容会自动存到浏览器里，工具栏最左「文档」可以新建 / 切换多篇'],
+  ...(__BUILD_MODE__ === 'effect' ? [[
+    '工具栏显示', '在「界面」中选择顶部工具栏或透明悬浮球。悬浮球空闲 3 秒后隐藏，使用「显示悬浮球」快捷键重新显示（可在快捷键设置中修改）。点击悬浮球展开工具栏，点击正文收起；支持拖动和重置位置。',
+  ] as [string, string]] : []),
+  ['公式', '在「公式」面板中选择符号或直接输入 TeX。'],
+  ['编辑公式', '选择正文中的公式以打开编辑面板。'],
+  ['图片', '通过「图片」导入文件，或使用 Ctrl+V 粘贴截图。'],
+  ['视频', '在「视频」中输入哔哩哔哩或 YouTube 链接。'],
+  ['表格', '进入单元格后，可在工具条中添加行列或删除表格。'],
+  ['搜索', '按 Ctrl+F 搜索当前文档，或选择「全部文档」搜索标题、正文和公式。'],
+  ['使用时长', '状态栏显示本次使用时长。'],
+  ['Markdown 输入', '启用后，输入或粘贴的 Markdown 会转换为富文本。'],
+  ['自动保存', '文档保存到当前浏览器。可在「文档」菜单中备份或恢复。'],
 ]
 
 export default function HelpModal({ open, onClose, onOpenShortcuts }: Props) {
@@ -58,7 +64,7 @@ export default function HelpModal({ open, onClose, onOpenShortcuts }: Props) {
         <div className="zh-modal__head">
           <span>
             Dadealbit Markdown 编辑器
-            <span className="zh-modal__sub">快捷键 &amp; 使用提示</span>
+            <span className="zh-modal__sub">快捷键与使用说明</span>
           </span>
           <button type="button" className="zh-modal__close" onClick={onClose} aria-label="关闭">
             ✕
@@ -83,7 +89,7 @@ export default function HelpModal({ open, onClose, onOpenShortcuts }: Props) {
               <span>列表缩进 / 反缩进</span>
             </div>
           </div>
-          <div className="zh-help__section">小提示</div>
+          <div className="zh-help__section">使用说明</div>
           <div className="zh-help__grid">
             {TIPS.map(([k, v]) => (
               <div className="zh-help__row" key={k}>
@@ -98,7 +104,7 @@ export default function HelpModal({ open, onClose, onOpenShortcuts }: Props) {
             自定义快捷键
           </button>
           <button type="button" className="zh-btn-solid" onClick={onClose}>
-            知道了
+            关闭
           </button>
         </div>
       </div>

@@ -16,7 +16,7 @@ import { chromium } from 'playwright-core'
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 
-const APP = resolve('Dadealbit Markdown 编辑器.html')
+const APP = resolve(process.env.DADEALBIT_TEST_HTML ?? 'Dadealbit Markdown 编辑器.html')
 if (!existsSync(APP)) {
   console.error('先跑 pnpm build')
   process.exit(1)
@@ -370,6 +370,46 @@ await page.waitForTimeout(300)
 
 const mdAfter = await page.evaluate(() => window.__MD__?.() ?? '')
 check('搜索全程没有改动文档内容', mdAfter === mdBefore, mdBefore === mdAfter ? '' : `${mdBefore.length} → ${mdAfter.length} 字`)
+
+// 从真实的编辑器节点检查公式命中、跨格式搜索、替换和撤销。
+await page.evaluate(() => {
+  window.__EDITOR__.commands.setContent({
+    type: 'doc', content: [
+      { type: 'paragraph', content: [
+        { type: 'text', text: '牛顿' },
+        { type: 'text', marks: [{ type: 'bold' }], text: '力学' },
+        { type: 'text', text: '；牛顿力学' },
+        { type: 'mathInline', attrs: { latex: '\\text{牛顿力学}+x' } },
+      ] },
+      { type: 'mathBlock', attrs: { latex: '\\text{牛顿力学}+y' } },
+    ],
+  })
+})
+await page.locator('.zh-btn[title="搜索"]').click()
+await page.locator('.zh-search__input').first().fill('牛顿力学')
+await page.waitForFunction(() => document.querySelector('.zh-search__count')?.textContent === '1/4')
+check('加粗分隔处、行内公式和行间公式都能搜索到', await page.locator('.ProseMirror .zh-search-hit:has(.math-node)').count() === 2)
+await page.getByRole('button', { name: '替换文字', exact: true }).click()
+await page.getByRole('textbox', { name: '替换为', exact: true }).fill('经典力学')
+await page.getByRole('button', { name: '替换当前', exact: true }).click()
+await page.waitForFunction(() => document.querySelector('.zh-search__count')?.textContent === '1/3')
+check('只替换当前项，命中列表即时更新', (await page.locator('.ProseMirror p').first().innerText()).includes('经典力学；牛顿力学'))
+await page.getByRole('button', { name: '全部替换文字', exact: true }).click()
+await page.waitForFunction(() => document.querySelector('.zh-search__count')?.textContent === '1/2')
+check('全部替换覆盖正文，保留两条公式', await page.evaluate(() => {
+  const editor = window.__EDITOR__
+  const paragraph = editor.state.doc.firstChild
+  const text = paragraph.content.content.filter(node => node.isText).map(node => node.text).join('')
+  const block = editor.state.doc.content.content.find(node => node.type.name === 'mathBlock')
+  return text === '经典力学；经典力学' && paragraph.lastChild.attrs.latex === '\\text{牛顿力学}+x'
+    && block?.attrs.latex === '\\text{牛顿力学}+y'
+}))
+check('命中公式时无法用正文替换按钮修改公式', await page.getByRole('button', { name: '替换当前', exact: true }).isDisabled())
+check('只剩公式命中时禁用全部替换文字', await page.getByRole('button', { name: '全部替换文字', exact: true }).isDisabled())
+await page.getByRole('textbox', { name: '替换为', exact: true }).press('Escape')
+await page.locator('.zh-btn[title="撤销"]').click()
+check('一次撤销整次批量替换，保留先前单次替换', await page.evaluate(() =>
+  window.__EDITOR__.state.doc.firstChild.textContent === '经典力学；牛顿力学'))
 check('全程没有 JS 报错', errors.length === 0, errors.slice(0, 2).join(' | '))
 
 await browser.close()

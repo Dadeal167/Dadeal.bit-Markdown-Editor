@@ -31,6 +31,7 @@ import { homedir } from 'node:os'
 import { resolve } from 'node:path'
 import { createHash, randomBytes } from 'node:crypto'
 import { deflateSync } from 'node:zlib'
+import { sniffImage } from './imageFormat.mjs'
 
 /* ---------- 参数 ---------- */
 const argv = process.argv.slice(2)
@@ -45,6 +46,19 @@ const TOKEN = tokenArg >= 0 ? String(argv[tokenArg + 1]) : randomBytes(16).toStr
 const WRITE_URL = 'https://zhuanlan.zhihu.com/write'
 /** 文章草稿列表页：用它按标题找回已有草稿（知乎写作页每次打开都是一篇新草稿） */
 const DRAFT_LIST_URL = 'https://www.zhihu.com/creator/manage/creation/draft?type=article'
+
+async function readDraftTextHash(page) {
+  const text = await page.evaluate(() => {
+    const root = document.querySelector('.public-DraftEditor-content')?.cloneNode(true)
+    if (!root) return ''
+    // 公式的渲染结果异步出现。用 LaTeX 比较，避免把渲染变化当成正文变化。
+    for (const math of root.querySelectorAll('[data-tex], img[eeimg]')) {
+      math.replaceWith('$' + (math.getAttribute('data-tex') ?? math.getAttribute('alt') ?? '') + '$')
+    }
+    return (root.textContent || '').replace(/\s+/g, ' ').trim()
+  })
+  return createHash('sha256').update(text).digest('hex')
+}
 
 /* 图床：给「导出知乎 .md」把本机图片换成**公开网址**用。
  * 为什么不用知乎自己的图床：它的草稿图片地址是私有的（pic-private + draft_token，
@@ -680,14 +694,9 @@ async function pasteViaClipboard(page, file, before) {
  *   · 写进系统剪贴板 + 真 Ctrl+V → 图片正常进草稿（草稿私有图床），刷新后还在 ✅
  * 代价：剪贴板那条会占用系统剪贴板，而且需要**有头**浏览器窗口（无头没有系统剪贴板）。
  */
-async function insertImageDirect(page, file) {
+async function insertImageDirect(page, file, animated = /\.gif$/i.test(file)) {
   const before = await countHostedImages(page).catch(() => 0)
-  const isGif = /\.gif$/i.test(file)
-  if (isGif) {
-    /* 动图优先喂文件：保住动画 */
-    if (await uploadViaFileInput(page, file, before)) return 'file'
-    log('  这张是动图，喂文件没成功 —— 退到剪贴板（注意：剪贴板会把它压成静态图）')
-  }
+  if (animated) return (await uploadViaFileInput(page, file, before)) ? 'file' : null
   if (await pasteViaClipboard(page, file, before)) return 'clipboard'
   /* 兜底：剪贴板不可用（无头窗口 / 被占用）时，非动图也走喂文件 */
   if (await uploadViaFileInput(page, file, before)) return 'file'
@@ -726,7 +735,7 @@ export async function extractImageFiles(html, tmpDir, page = null) {
     } else {
       const file = resolve(tmpDir, `push-img-${n}.${got.ext}`)
       writeFileSync(file, got.buf)
-      queue.push({ index: n, src, file, bytes: got.buf.length })
+      queue.push({ index: n, src, file, bytes: got.buf.length, animated: got.animated })
       segments.push({ type: 'image', index: n, file, src })
       n += 1
     }
@@ -738,6 +747,12 @@ export async function extractImageFiles(html, tmpDir, page = null) {
 
 const extOf = (mime) =>
   mime.includes('jpeg') || mime.includes('jpg') ? 'jpg' : mime.includes('gif') ? 'gif' : mime.includes('webp') ? 'webp' : 'png'
+
+function imageBytes(buf, mime) {
+  const format = sniffImage(buf)
+  const ext = format?.ext ?? extOf(mime)
+  return { buf, ext, animated: ext === 'gif' || format?.animated === true }
+}
 
 /** 把 jsDelivr 的地址换成它的其它镜像域名（同一个路径）。
  *  为什么要换：cdn.jsdelivr.net 有时会 302 到 raw.githubusercontent.com，
@@ -761,7 +776,7 @@ async function fetchImageBytes(src, _page = null) {
       if (!m) return null
       const mime = (m[1] || 'image/png').toLowerCase()
       const buf = m[2] ? Buffer.from(m[3], 'base64') : Buffer.from(decodeURIComponent(m[3]), 'binary')
-      return { buf, ext: extOf(mime) }
+      return imageBytes(buf, mime)
     }
     const candidates = [src, ...jsdelivrMirrors(src)]
     for (let round = 0; round < 2; round += 1) {
@@ -775,7 +790,7 @@ async function fetchImageBytes(src, _page = null) {
           if (!/^image\//.test(mime)) continue
           const buf = Buffer.from(await res.arrayBuffer())
           if (!buf.length || buf.length > INLINE_MAX_BYTES) continue
-          return { buf, ext: extOf(mime) }
+          return imageBytes(buf, mime)
         } catch {
           /* 这个地址没成，试下一个 */
         } finally {
@@ -960,8 +975,9 @@ async function uploadDraft({ title, html }) {
       /* 首次运行没有记录 */
     }
     if (existing.text) {
-      if (lastWritten && lastWritten.title === existing.title && lastWritten.text !== existing.text) {
-        warnings.push('这篇草稿在知乎上被改过（可能是你自己改的），这次上传把那些改动覆盖掉了')
+      if (lastWritten?.title === existing.title && typeof lastWritten.contentHash === 'string' &&
+          lastWritten.contentHash !== await readDraftTextHash(page)) {
+        warnings.push('知乎草稿的正文曾被修改，本次保存已覆盖原有内容。')
       }
       try {
         const backupDir = resolve(STATE_DIR, 'backups')
@@ -1117,10 +1133,10 @@ async function uploadDraft({ title, html }) {
         await page.waitForTimeout(300)
       }
 
-      let via = await insertImageDirect(page, item.file)
+      let via = await insertImageDirect(page, item.file, item.animated)
       if (!via) {
         await page.waitForTimeout(3000)
-        via = await insertImageDirect(page, item.file)
+        via = await insertImageDirect(page, item.file, item.animated)
       }
       if (via) {
         insertedDirect += 1
@@ -1133,12 +1149,14 @@ async function uploadDraft({ title, html }) {
           log(`  发现少了一张（草稿里 ${nowHosted} 张 < 已插 ${insertedDirect} 张），补插一次`)
           await focusBodyEnd(page)
           await page.waitForTimeout(300)
-          if (await insertImageDirect(page, item.file)) {
+          if (await insertImageDirect(page, item.file, item.animated)) {
             log('  补插成功')
           } else {
             warnings.push(`有 1 张图片插入后被知乎丢掉了（第 ${item.index + 1} 张），建议到草稿里看一眼`)
           }
         }
+      } else if (item.animated) {
+        warnings.push(`第 ${item.index + 1} 张动图原文件上传失败。可在知乎草稿中手动上传原文件。`)
       } else {
         pastedFallback += 1
         log(`  第 ${item.index + 1} 张图插不进去，退回"跟着正文粘"（可能显示导入失败）`)
@@ -1335,6 +1353,7 @@ async function uploadDraft({ title, html }) {
           {
             title: after.title,
             text: after.text,
+            contentHash: await readDraftTextHash(page),
             at: Date.now(),
             /* 顺手记下这次草稿里的**托管图片网址**（诊断用）：
                用户报"图片 / 动图不对"时，光看"插了几张"判断不了 ——

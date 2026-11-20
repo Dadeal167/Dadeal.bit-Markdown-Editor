@@ -287,14 +287,15 @@ check(
 )
 
 await clickImage(0)
-await page.locator('.zh-imgmenu__input').fill('她说的"重点"在这里')
+const quotedCaption = '她说的"重点"见 A\\B\\'
+await page.locator('.zh-imgmenu__input').fill(quotedCaption)
 await page.waitForTimeout(500)
 const c4 = await captionOf()
 await setMd(c4.md)
 const c4b = await captionOf()
 check(
   '说明里带引号也不会写坏（转义能往返）',
-  c4b.attrs?.caption === '她说的"重点"在这里',
+  c4b.attrs?.caption === quotedCaption && c4b.attrs?.align === 'center',
   JSON.stringify({ md: c4.md.slice(-34), again: c4b.attrs?.caption }),
 )
 

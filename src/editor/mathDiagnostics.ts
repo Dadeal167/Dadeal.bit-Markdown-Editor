@@ -18,6 +18,7 @@
  */
 import type { Editor } from '@tiptap/core'
 import { repairLatex, rendersOk } from './math/latexRepair'
+import { documentMacros } from './math/documentMacros'
 
 /** 诊断包里最多放多少个公式（文档公式特别多时截断，避免文件过大） */
 const MAX_FORMULAS = 400
@@ -72,11 +73,12 @@ function collectLatex(editor: Editor): string[] {
 /** 当前公式状态摘要 */
 export function summarizeFormulas(editor: Editor): FormulaSummary {
   const latexes = collectLatex(editor)
+  const { macros } = documentMacros(editor.state.doc)
   let fail = 0
   for (const l of latexes) {
     if (!l.trim()) continue
     try {
-      if (!rendersOk(l, false)) fail += 1
+      if (!rendersOk(l, false, macros)) fail += 1
     } catch {
       fail += 1
     }
@@ -242,9 +244,10 @@ export function buildFormulaDiag(editor: Editor | null): FormulaDiag {
         let storedOk = false
         let repairedOk = false
         try {
-          storedOk = rendersOk(stored, display)
-          repaired = repairLatex(stored, display)
-          repairedOk = rendersOk(repaired, display)
+          const { macros } = documentMacros(editor.state.doc)
+          storedOk = rendersOk(stored, display, macros)
+          repaired = repairLatex(stored, display, macros)
+          repairedOk = rendersOk(repaired, display, macros)
         } catch {
           /* 渲染判断本身出错，就当不通过 */
         }

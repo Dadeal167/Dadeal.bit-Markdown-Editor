@@ -7,6 +7,7 @@ import {
 } from './typography'
 import { addCustomFont, formatSize, removeCustomFont, type CustomFont } from './customFonts'
 import { PAGE_BG_PRESETS, isDarkPaper, type PageBackground } from './pageBackground'
+import { useAnchoredMenu } from './useAnchoredMenu'
 
 interface Props {
   open: boolean
@@ -40,6 +41,8 @@ export default function TypographyMenu({
   onPageBackgroundChange,
 }: Props) {
   const ref = useRef<HTMLDivElement>(null)
+  const menu = useRef<HTMLDivElement>(null)
+  useAnchoredMenu(open, ref, menu)
   const fileRef = useRef<HTMLInputElement>(null)
   const [fontMsg, setFontMsg] = useState<string | null>(null)
 
@@ -73,7 +76,7 @@ export default function TypographyMenu({
       </button>
 
       {open && (
-        <div className="zh-typomenu">
+        <div className="zh-typomenu" ref={menu}>
           <div className="zh-typomenu__section">正文字号（作用于整篇）</div>
           <div className="zh-typomenu__row">
             {FONT_SIZES.map((s) => (
@@ -147,7 +150,7 @@ export default function TypographyMenu({
           <div className="zh-typomenu__section">
             背景（作用于整篇）
             <span className="zh-typomenu__note">
-              {pageBackground.color && isDarkPaper(pageBackground.color) ? '深色纸，字色已自动变浅' : '换一张纸的颜色'}
+              {pageBackground.color && isDarkPaper(pageBackground.color) ? '深色纸张使用浅色文字' : '设置正文背景颜色'}
             </span>
           </div>
           <div className="zh-typomenu__colors" data-bg-row>

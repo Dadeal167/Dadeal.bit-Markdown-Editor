@@ -1,5 +1,35 @@
 import type { Editor } from '@tiptap/core'
-import { Table } from '@tiptap/extension-table'
+import type { Node as PMNode } from '@tiptap/pm/model'
+import { Table, TableView } from '@tiptap/extension-table'
+import { decodeObjectCaption, objectId } from './objectMarkup'
+
+export class CaptionedTableView extends TableView {
+  constructor(...args: ConstructorParameters<typeof TableView>) {
+    super(...args)
+    this.updateCaption(args[0])
+  }
+
+  update(node: PMNode) {
+    if (!super.update(node)) return false
+    this.updateCaption(node)
+    return true
+  }
+
+  private updateCaption(node: PMNode) {
+    const id = objectId(node.attrs.objectId, 'tab')
+    if (!id) {
+      this.table.deleteCaption()
+      this.table.removeAttribute('data-dadealbit-object')
+      return
+    }
+    this.table.setAttribute('data-dadealbit-object', id)
+    const caption = this.table.createCaption()
+    caption.className = 'zh-caption zh-object-caption'
+    caption.contentEditable = 'false'
+    const text = String(node.attrs.caption ?? '')
+    if (caption.textContent !== text) caption.textContent = text
+  }
+}
 
 /**
  * 修 tiptap-markdown 的表格序列化：它写单元格时只渲染**第一个孩子**，
@@ -8,6 +38,22 @@ import { Table } from '@tiptap/extension-table'
  * 这里改成：有孩子就渲染整格，多个段落用 `<br>` 连起来。
  */
 export const MarkdownTable = Table.extend({
+  addAttributes() {
+    return {
+      ...this.parent?.(),
+      ...(__BUILD_MODE__ === 'effect' ? {
+        objectId: {
+          default: '',
+          parseHTML: (el: HTMLElement) => objectId(el.getAttribute('data-dadealbit-object'), 'tab'),
+          renderHTML: (attrs: Record<string, unknown>) => {
+            const id = objectId(attrs.objectId, 'tab')
+            return id ? { 'data-dadealbit-object': id, 'data-caption': String(attrs.caption ?? '') } : {}
+          },
+        },
+        caption: { default: '', rendered: false, parseHTML: (el: HTMLElement) => el.getAttribute('data-caption') ?? '' },
+      } : {}),
+    }
+  },
   addStorage() {
     return {
       markdown: {
@@ -19,18 +65,16 @@ export const MarkdownTable = Table.extend({
             closeBlock: (n: unknown) => void
             renderInline: (n: unknown) => void
           },
-          node: { forEach: (f: (row: unknown, p: number, i: number) => void) => void },
+          node: PMNode,
         ) {
+          const id = objectId(node.attrs.objectId, 'tab')
+          const marker = id ? `<span data-dadealbit-table="${id}" data-caption="${encodeURIComponent(node.attrs.caption ?? '')}"></span>` : ''
           state.inTable = true
           node.forEach((row, _p, i) => {
-            const r = row as {
-              forEach: (f: (col: unknown, p: number, j: number) => void) => void
-              childCount: number
-            }
             state.write('| ')
-            r.forEach((col, _p2, j) => {
+            row.forEach((cell, _p2, j) => {
               if (j) state.write(' | ')
-              const cell = col as { childCount: number; forEach: (f: (child: unknown, p: number, k: number) => void) => void }
+              if (!i && !j && marker) state.write(marker)
               if (cell.childCount > 0) {
                 cell.forEach((child, _p3, k) => {
                   if (k) state.write('<br>')
@@ -41,7 +85,14 @@ export const MarkdownTable = Table.extend({
             state.write(' |')
             state.ensureNewLine()
             if (!i) {
-              const delimiterRow = Array.from({ length: r.childCount }).map(() => '---').join(' | ')
+              const columns: string[] = []
+              row.forEach((cell) => {
+                const align = cell.attrs.align
+                columns.push(__BUILD_MODE__ === 'effect'
+                  ? (align === 'left' || align === 'center' ? ':' : '') + '---' + (align === 'right' || align === 'center' ? ':' : '')
+                  : '---')
+              })
+              const delimiterRow = columns.join(' | ')
               state.write(`| ${delimiterRow} |`)
               state.ensureNewLine()
             }
@@ -50,7 +101,18 @@ export const MarkdownTable = Table.extend({
           state.inTable = false
         },
         parse: {
-          // 解析交给 markdown-it
+          updateDOM(root: HTMLElement) {
+            if (__BUILD_MODE__ !== 'effect') return
+            for (const table of root.querySelectorAll('table')) {
+              const mark = table.rows[0]?.cells[0]?.firstElementChild
+              if (!mark?.matches('span[data-dadealbit-table]')) continue
+              const id = objectId(mark.getAttribute('data-dadealbit-table'), 'tab')
+              if (!id) continue
+              table.setAttribute('data-dadealbit-object', id)
+              table.setAttribute('data-caption', decodeObjectCaption(mark.getAttribute('data-caption') ?? ''))
+              mark.remove()
+            }
+          },
         },
       },
     }
@@ -67,10 +129,10 @@ export const MarkdownTable = Table.extend({
  *  - 逐行处理以 `|` 开头的表格行，按"这一格还该有几个内部竖线"决定 `|` 是分隔符还是内容
  *  - 行内竖线数量与预期不符就**原样返回**（宁可不动，也不能乱改内容）
  */
-export function escapeTablePipes(editor: Editor, md: string): string {
+export function escapeTablePipes(editor: Editor, md: string, doc = editor.state.doc): string {
   const rows: number[][] = []
 
-  editor.state.doc.descendants((node) => {
+  doc.descendants((node) => {
     if (node.type.name !== 'table') return true
     node.forEach((row) => {
       const counts: number[] = []
@@ -81,6 +143,8 @@ export function escapeTablePipes(editor: Editor, md: string): string {
             n += (child.text?.match(/\|/g) ?? []).length
           } else if (child.type.name === 'mathInline') {
             n += String(child.attrs.latex ?? '').match(/\|/g)?.length ?? 0
+          } else if (child.type.name === 'wikiLink') {
+            n += String(child.attrs.raw).match(/\|/g)?.length ?? 0
           }
           return true
         })

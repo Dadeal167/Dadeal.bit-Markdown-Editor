@@ -11,18 +11,30 @@
  * 本来就能正常渲染的公式一个字符都不改。
  */
 import katex from 'katex'
+import { equationMarkup, substituteEquationReferences } from './equationSyntax'
+import { EMPTY_MACROS, katexMacroOptions, type MathMacros } from './documentMacros'
+
+function macroCache<T>(caches: WeakMap<MathMacros, Map<string, T>>, macros: MathMacros) {
+  const cached = caches.get(macros)
+  if (cached) return cached
+  const created = new Map<string, T>()
+  caches.set(macros, created)
+  return created
+}
 
 /** 能不能用 KaTeX 渲染出来（strict:false —— 中文、① 这类字符只警告不报错） */
-const okCache = new Map<string, boolean>()
+const okCaches = new WeakMap<MathMacros, Map<string, boolean>>()
 
-export function rendersOk(tex: string, display: boolean): boolean {
+export function rendersOk(tex: string, display: boolean, macros: MathMacros = EMPTY_MACROS): boolean {
   if (!tex.trim()) return true
   const key = (display ? 'D' : 'I') + tex
+  const okCache = macroCache(okCaches, macros)
   const hit = okCache.get(key)
   if (hit !== undefined) return hit
   let ok = true
   try {
-    katex.renderToString(tex, { throwOnError: true, displayMode: display, strict: false })
+    const preview = tex.includes('\\') ? substituteEquationReferences(equationMarkup(tex).core) : tex
+    katex.renderToString(preview, { throwOnError: true, displayMode: display, strict: false, ...katexMacroOptions(macros) })
   } catch {
     ok = false
   }
@@ -59,6 +71,7 @@ export function decodeMathEntities(tex: string): string {
 const INLINE_DELIM = /^\$([^$]+)\$$/
 const BLOCK_DELIM = /^\$\$([\s\S]+)\$\$$/
 const BRACKET_DELIM = /^\\\[([\s\S]+)\\\]$/
+const PAREN_DELIM = /^\\\(([\s\S]+)\\\)$/
 
 /**
  * 公式里混进了 `\[ … \]` 定界符。
@@ -82,10 +95,21 @@ function unescapeBrackets(s: string): string {
  * 这是上一招的"整条都是定界符"版本（`\[-\infty,\frac12\]` 这种）。
  */
 function stripInnerDelims(s: string): string {
-  if (s.includes('\n')) return s
   const t = s.trim()
-  const m = INLINE_DELIM.exec(t) ?? BLOCK_DELIM.exec(t) ?? BRACKET_DELIM.exec(t)
+  const m = BLOCK_DELIM.exec(t) ?? BRACKET_DELIM.exec(t) ?? PAREN_DELIM.exec(t) ?? INLINE_DELIM.exec(t)
   return m ? m[1].trim() : s
+}
+
+/** 只转换完整的外层环境，保留内部公式、分行与对齐点。 */
+function replaceOuterEnvironment(tex: string): string {
+  return tex.replace(/^(\s*)\\begin\{(align\*?|gather\*?|split)\}([\s\S]+)\\end\{\2\}(\s*)$/,
+    (_, before: string, name: string, body: string, after: string) => {
+      // 带编号或引用的环境需要作者自己选择如何处理编号。
+      if (/\\(?:label|tag|notag|nonumber)\b/.test(body)) return tex
+      const env = name.startsWith('gather') ? 'gathered' : 'aligned'
+      return `${before}\\begin{${env}}${body}\\end{${env}}${after}`
+    },
+  )
 }
 
 /**
@@ -96,6 +120,8 @@ const STEPS: Array<(s: string) => string> = [
   // HTML 实体 → 真字符（&lt; &gt; &amp; …）。放第一步：它最便宜，而且不做的话
   // 下面的反斜杠修法全都白搭 —— KaTeX 看到 &lt; 就整条失败。
   decodeMathEntities,
+  stripInnerDelims,
+  replaceOuterEnvironment,
   // \\{  \\}  →  \{  \}      （\left \\{ 这类，多了一个反斜杠）
   (s) => s.replace(/\\\\(?=[{}])/g, '\\'),
   // \left {  \right }  →  \left\{  \right\}   （少了一个反斜杠）
@@ -106,10 +132,8 @@ const STEPS: Array<(s: string) => string> = [
   (s) => s.replace(/\\{3,}/g, '\\\\'),
   // 结尾孤零零的反斜杠 / 反斜杠后面直接结束
   (s) => s.replace(/\\+$/, ''),
-  // 公式里混进了多余的 $（定界符被吃进来一个）
-  (s) => s.replace(/^\$+/, '').replace(/\$+$/, ''),
-  // 整个 `\[ … \]` / `$$ … $$` 被塞进了公式 → 把里层定界符剥掉
-  stripInnerDelims,
+  // 只剥掉边缘的定界符，保留其前面转义过的字面美元符号。
+  (s) => s.replace(/^\$+/, '').replace(/(\\\$)?\$+$/, '$1'),
   // 公式中间夹着转义的方括号 `\[` `\]` → 解回普通方括号
   unescapeBrackets,
 ]
@@ -120,7 +144,7 @@ const SPELLING: Array<[RegExp, string]> = [
   [/\\and(?![a-zA-Z])/g, '\\land'],
   [/\\rightleftarrow(?![a-zA-Z])/g, '\\leftrightarrow'],
   [/\\leftrightarrow(?![a-zA-Z])/g, '\\leftrightarrow'],
-  [/\\dollar/g, '\\$'],
+  [/\\dollar(?![a-zA-Z])/g, '\\$'],
   [/\\degree(?![a-zA-Z])/g, '^{\\circ}'],
   [/\\celsius(?![a-zA-Z])/g, '^{\\circ}\\mathrm{C}'],
   [/\\perthousand(?![a-zA-Z])/g, '\\text{‰}'],
@@ -128,7 +152,7 @@ const SPELLING: Array<[RegExp, string]> = [
 ]
 
 /** 同一段公式会被反复渲染（每次输入都重渲染），缓存一下省点时间 */
-const cache = new Map<string, string>()
+const caches = new WeakMap<MathMacros, Map<string, string>>()
 const CACHE_MAX = 4000
 
 /**
@@ -152,22 +176,23 @@ const CACHE_MAX = 4000
  * `"\text{中文} \or \left\{" → "\text{中文} \lor \left\{"`（改了还是渲染不出来）——
  * 说明这些断言真的能拦住这类 bug，不是摆设。
  */
-export function repairLatex(tex: string, display: boolean): string {
+export function repairLatex(tex: string, display: boolean, macros: MathMacros = EMPTY_MACROS): string {
   if (!tex.trim()) return tex
   const key = (display ? 'D' : 'I') + tex
+  const cache = macroCache(caches, macros)
   const hit = cache.get(key)
   if (hit !== undefined) return hit
 
   let out = tex
   try {
-    if (!rendersOk(tex, display)) {
+    if (!rendersOk(tex, display, macros)) {
       let cur = tex
       for (const step of STEPS) {
         const next = step(cur)
         if (next === cur) continue
         cur = next
         /* 采用了才 break；没采用也要把 cur 留着给后面的步骤继续累加 */
-        if (rendersOk(cur, display)) {
+        if (cur.trim() && rendersOk(cur, display, macros)) {
           out = cur
           break
         }
@@ -176,7 +201,7 @@ export function repairLatex(tex: string, display: boolean): string {
       if (out === tex) {
         for (const [re, to] of SPELLING) {
           const next = cur.replace(re, to)
-          if (next !== cur && rendersOk(next, display)) {
+          if (next !== cur && rendersOk(next, display, macros)) {
             out = next
             break
           }
@@ -187,7 +212,7 @@ export function repairLatex(tex: string, display: boolean): string {
       if (out === tex) {
         let acc = cur
         for (const [re, to] of SPELLING) acc = acc.replace(re, to)
-        if (acc !== cur && rendersOk(acc, display)) out = acc
+        if (acc !== cur && rendersOk(acc, display, macros)) out = acc
       }
     }
   } catch {
@@ -198,7 +223,7 @@ export function repairLatex(tex: string, display: boolean): string {
   /* 出口再兜一道：万一上面哪条路径让 out 变成了渲染不出来的东西，退回原文 */
   if (out !== tex) {
     try {
-      if (!rendersOk(out, display)) out = tex
+      if (!rendersOk(out, display, macros)) out = tex
     } catch {
       out = tex
     }

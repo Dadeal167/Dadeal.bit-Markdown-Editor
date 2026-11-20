@@ -21,7 +21,7 @@ call pnpm build
 if errorlevel 1 goto :buildfail
 
 echo.
-echo   Done. Double-click either HTML file in this folder to use it.
+echo   Done. Double-click the HTML file in this folder to use it.
 echo.
 pause
 exit /b 0

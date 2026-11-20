@@ -5,15 +5,18 @@
  * 写两三篇带图的文章就撞上限（用户真撞到过："保存失败：内容超出浏览器存储上限"）。
  * 现在文档放 IndexedDB（额度按磁盘剩余空间算），localStorage 只留作迁移来源 + 冷备份。
  *
- * 验四件事：
+ * 验证范围：
  *   1. 老数据能迁过来：localStorage 里的两篇 → 启动后出现在界面里、也进了 IndexedDB，且 localStorage 那份没被删
  *   2. 单篇超过 5MB 也能存住（老后端必然失败的量级），刷新后内容还在
  *   3. 保存是"只写变化的那几篇"：改一篇之后，另一篇在 IndexedDB 里的记录不受影响
  *   4. 浏览器没有 IndexedDB 时安静退回 localStorage 老路，功能不崩
+ *   5. 写失败的改动在后续保存时重试
+ *   6. 数据库迟到时保留未自动保存的输入和数据库里的其他文档
  */
 import { chromium } from 'playwright-core'
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
 
 /**
  * **本套件的断言总数** —— 文档里的数量占位符读的就是这个常量（见 check:docs-counts）。
@@ -25,14 +28,14 @@ import { resolve } from 'node:path'
  * 收尾处还有一条自检：实际跑出来的断言数必须等于这个常量，
  * 否则套件自己失败 —— 免得"测试被删掉几条、常量没跟着改"，把常量变成新的谎话。
  */
-export const TEST_COUNT = 25
+export const TEST_COUNT = 29
 
-const APP = resolve('Dadealbit Markdown 编辑器.html')
+const APP = resolve(process.env.DADEALBIT_TEST_HTML ?? 'Dadealbit Markdown 编辑器.html')
 if (!existsSync(APP)) {
   console.error('先跑 pnpm build')
   process.exit(1)
 }
-const app = 'file:///' + APP.replace(/\\/g, '/')
+const app = pathToFileURL(APP).href
 
 const results = []
 const check = (name, ok, detail = '') => {
@@ -311,6 +314,60 @@ const browser = await chromium.launch({ channel: 'msedge', headless: true })
   await page.waitForTimeout(1200)
   const text = await page.locator('.ProseMirror').innerText()
   check('刷新后失败过的那一版内容还在', text.includes('失败这一版的关键内容'), text.slice(0, 40).replace(/\n/g, '⏎'))
+  await page.close()
+}
+
+/* ---------- 6. 先显示旧备份，编辑之后数据库才就绪 ---------- */
+{
+  const page = await browser.newPage()
+  await page.addInitScript(() => {
+    if (sessionStorage.getItem('delayed-db-seeded')) return
+    sessionStorage.setItem('delayed-db-seeded', '1')
+    const draft = { id: 'edited', title: '备份标题', md: '备份里的正文', at: 1 }
+    const untouched = { id: 'untouched', title: '另一篇旧标题', md: '另一篇旧正文', at: 1 }
+    localStorage.setItem('md-editor-docs-v1', JSON.stringify({ docs: [draft, untouched], currentId: draft.id }))
+
+    const open = IDBFactory.prototype.open
+    IDBFactory.prototype.open = function (...args) {
+      const request = open.apply(this, args)
+      if (args[0] !== 'md-editor-docs') return request
+      IDBFactory.prototype.open = open
+      Object.defineProperty(request, 'onsuccess', {
+        set(callback) {
+          request.addEventListener('success', (event) => {
+            const tx = request.result.transaction(['docs', 'meta'], 'readwrite')
+            const docs = tx.objectStore('docs')
+            docs.put({ ...draft, title: '数据库标题', md: '数据库中的冲突正文', at: 2 })
+            docs.put({ ...untouched, title: '另一篇新标题', md: '另一篇新正文', at: 2 })
+            docs.put({ id: 'db-only', title: '只有数据库有的文档', md: '保留这篇', at: 2 })
+            tx.objectStore('meta').put({ k: 'currentId', v: draft.id })
+            tx.oncomplete = () => { window.__releaseDocDb = () => callback.call(request, event) }
+          })
+        },
+      })
+      return request
+    }
+  })
+
+  await page.goto(app, { waitUntil: 'load', timeout: 60000 })
+  await page.waitForFunction(() => window.__EDITOR__?.isInitialized && window.__releaseDocDb)
+  await page.locator('.zh-title').fill('等待期间的新标题')
+  await page.evaluate(() => {
+    window.__EDITOR__.commands.setContent('<p>尚未自动保存的新正文</p>')
+    window.__releaseDocDb()
+  })
+  await page.waitForFunction(() => window.__DOCSTORE__?.backend === 'indexeddb')
+  const matchesEdit = async () =>
+    (await page.locator('.zh-title').inputValue()) === '等待期间的新标题' &&
+    (await page.locator('.ProseMirror').innerText()) === '尚未自动保存的新正文'
+  check('数据库迟到时保留未自动保存的标题和正文', await matchesEdit())
+  const { docs } = await readIdb(page)
+  check('数据库独有文档和未编辑文档的较新版本都还在',
+    docs.some((doc) => doc.id === 'db-only') && docs.some((doc) => doc.id === 'untouched' && doc.title === '另一篇新标题'))
+  check('同一篇的数据库版本保留为恢复副本', docs.some((doc) => doc.title === '数据库标题（恢复副本）'))
+  await page.reload({ waitUntil: 'load', timeout: 60000 })
+  await page.waitForFunction(() => window.__EDITOR__?.isInitialized)
+  check('迟到期间的编辑刷新后仍在', await matchesEdit())
   await page.close()
 }
 

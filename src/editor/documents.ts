@@ -11,13 +11,32 @@
  *
  * 键名一律不许改：改了用户已有的文档就全丢了（这条从第一版就写在这儿了）。
  */
-import { idbAvailable, idbLoadAll, idbReplaceAll, idbSaveChanged } from './docStore'
+import { idbLoadAll, idbMigrateIfEmpty, idbSaveChanged } from './docStore'
 
 export interface Doc {
   id: string
   title: string
   md: string
   at: number
+  trashedAt?: number
+  versions?: DocVersion[]
+  numberEquations?: boolean
+  exportContents?: boolean
+}
+
+export interface DocVersion {
+  title: string
+  md: string
+  at: number
+}
+
+export const MAX_DOC_VERSIONS = 12
+
+export function captureDocVersion(doc: Doc, at = Date.now()): Doc {
+  const last = doc.versions?.[0]
+  if (last?.md === doc.md && last.title === doc.title) return doc
+  const version = { title: doc.title, md: doc.md, at }
+  return { ...doc, versions: [version, ...(doc.versions ?? [])].slice(0, MAX_DOC_VERSIONS) }
 }
 
 export interface DocStore {
@@ -48,22 +67,13 @@ const BACKUP_MAX_BYTES = 2 * 1024 * 1024
 let dirtyIds = new Set<string>()
 /** 上一次没删成功的 id：同理，下次一起删 */
 let pendingRemoved = new Set<string>()
-/** 界面已经先渲染了（3 秒超时那条路），后面 IndexedDB 才就绪：需要整库推一次 */
-let needFullPush = false
-/** 界面是不是已经先渲染过了（超时兜底那条路） */
-let uiStarted = false
-/** 界面先渲染出来的那份数据是不是被用户改过（改过就以内存为准，不拿 IndexedDB 覆盖） */
-let editedBeforeIdbReady = false
-/** IndexedDB 就绪得比界面渲染晚时，通知界面重新读一遍（_只有当窗口期内没有编辑时_） */
-let onReloaded: ((store: DocStore) => void) | null = null
-export function onStoreReloaded(cb: ((store: DocStore) => void) | null): void {
+/** 启动超时后显示的备份，用于区分备份中的旧数据和用户刚做的改动。 */
+let fallbackBase: DocStore | null = null
+let onReloaded: ((store: DocStore, live?: Doc) => void) | null = null
+let readLiveDoc: (() => Doc | undefined) | undefined
+export function onStoreReloaded(cb: typeof onReloaded, snapshot?: typeof readLiveDoc): void {
   onReloaded = cb
-}
-
-/** main.tsx 在"没等到 IndexedDB 就先把界面画出来"之后调用它 */
-export function markUiStarted(): void {
-  uiStarted = true
-  if (!idbOk) needFullPush = true
+  readLiveDoc = snapshot
 }
 
 /* 异步后端意味着"写失败"是稍后才知道的，没法靠 saveStore 的返回值同步告诉界面。
@@ -166,7 +176,8 @@ export function loadLocalStore(): DocStore {
       const parsed = JSON.parse(raw) as DocStore
       const docs = Array.isArray(parsed?.docs) ? parsed.docs.filter((d) => d && typeof d.md === 'string') : []
       if (docs.length > 0) {
-        const currentId = docs.some((d) => d.id === parsed.currentId) ? parsed.currentId : docs[0].id
+        const currentId = docs.some((d) => d.id === parsed.currentId && !d.trashedAt)
+          ? parsed.currentId : (docs.find((d) => !d.trashedAt) ?? docs[0]).id
         initial = { docs, currentId }
       } else {
         broken = true
@@ -211,99 +222,106 @@ export function loadLocalStore(): DocStore {
  * 放在渲染之前是为了让 `loadStore()` 能同步返回最终数据 —— 界面里到处都在同步读它。
  */
 export async function initDocStore(): Promise<DocStore> {
-  idbOk = await idbAvailable()
-  if (idbOk) {
-    try {
-      const fromIdb = await idbLoadAll()
-      if (fromIdb) {
-        // 界面已经先渲染过（3 秒超时那条路）：见下面的"迟到"处理
-        if (adopt(fromIdb, 'indexeddb')) return cache as DocStore
-        return fromIdb
-      }
-      // 库里是空的：把 localStorage 的老文档搬过去（搬完不删 localStorage，留着当双保险）
-      const legacy = loadLocalStore()
-      await idbReplaceAll(legacy)
-      if (adopt(legacy, 'indexeddb')) return cache as DocStore
-      cache = legacy
-      backend = 'indexeddb'
-      expose()
-      return cache
-    } catch {
-      // 读/迁移出问题就退回老路，绝不让界面白屏
-      idbOk = false
-    }
+  let fromIdb: DocStore
+  try {
+    fromIdb = (await idbLoadAll()) ?? (await idbMigrateIfEmpty(cache ?? loadLocalStore()))
+  } catch {
+    // 读库或迁移失败时，继续使用已经显示的本地备份。
+    cache ??= loadLocalStore()
+    fallbackBase = null
+    expose()
+    return cache
   }
-  cache = loadLocalStore()
-  backend = 'localstorage'
+
+  const base = fallbackBase
+  const local = cache
+  const live = base ? readLiveDoc?.() : undefined
+  const merged = base && local ? mergeStartupChanges(fromIdb, base, local, live) : fromIdb
+  fallbackBase = null
+  cache = fromIdb
+  idbOk = true
+  backend = 'indexeddb'
+  if (merged !== fromIdb) saveStore(merged)
   expose()
-  return cache
+  if (base) onReloaded?.(merged, live)
+  return merged
 }
 
-/**
- * IndexedDB 迟到（界面已经先用 localStorage 那份画出来了）时怎么办：
- *   · 窗口期内**没有编辑** → 以 IndexedDB 为准，并喊界面重新读一遍（否则界面一直显示过期列表）
- *   · 窗口期内**编辑过** → 以内存为准（用户正打着的字不能被覆盖），标记"下次整库推一次"，
- *     免得 IndexedDB 里缺文档；返回 false 表示"别采纳 IndexedDB 这份"
- */
-function adopt(fromIdb: DocStore, be: 'indexeddb' | 'localstorage'): boolean {
-  if (editedBeforeIdbReady) {
-    needFullPush = true
-    idbOk = true
-    backend = be
-    expose()
-    return false
+function sameContent(a: Doc, b: Doc | undefined): boolean {
+  return !!b && a.title === b.title && a.md === b.md && a.trashedAt === b.trashedAt &&
+    Boolean(a.numberEquations) === Boolean(b.numberEquations) &&
+    Boolean(a.exportContents) === Boolean(b.exportContents) &&
+    a.versions?.length === b.versions?.length &&
+    (a.versions ?? []).every((version, i) => {
+      const other = b.versions?.[i]
+      return version.at === other?.at && version.title === other.title && version.md === other.md
+    })
+}
+
+/** 将启动等待期间的改动应用到数据库版本，备份中的旧内容不参与覆盖。 */
+function mergeStartupChanges(db: DocStore, base: DocStore, local: DocStore, live: Doc | undefined): DocStore {
+  const baseById = new Map(base.docs.map((doc) => [doc.id, doc]))
+  const merged = new Map(db.docs.map((doc) => [doc.id, doc]))
+  const localIds = new Set(local.docs.map((doc) => doc.id))
+  let changed = local.currentId !== base.currentId
+
+  for (const original of local.docs) {
+    const doc = live?.id === original.id ? live : original
+    const before = baseById.get(doc.id)
+    if (sameContent(doc, before)) continue
+    changed = true
+    const stored = merged.get(doc.id)
+    if (stored && !sameContent(stored, doc) && !sameContent(stored, before)) {
+      const copy = createDoc(`${docLabel(stored)}（恢复副本）`, stored.md)
+      merged.set(copy.id, copy)
+    }
+    merged.set(doc.id, doc)
   }
-  cache = fromIdb
-  backend = be
-  idbOk = true
-  expose()
-  if (uiStarted) onReloaded?.(fromIdb)
-  return true
+
+  for (const before of base.docs) {
+    const stored = merged.get(before.id)
+    if (!localIds.has(before.id) && stored && sameContent(stored, before) && merged.size > 1) {
+      merged.delete(before.id)
+      changed = true
+    }
+  }
+
+  if (!changed) return db
+  const docs = [...merged.values()]
+  const currentId = merged.get(local.currentId) && !merged.get(local.currentId)?.trashedAt ? local.currentId
+    : merged.get(db.currentId) && !merged.get(db.currentId)?.trashedAt ? db.currentId : (docs.find((d) => !d.trashedAt) ?? docs[0]).id
+  return { docs, currentId }
 }
 
 /** 同步取文档库（渲染时用）。没走过 initDocStore 就退回 localStorage 老路 */
 export function loadStore(): DocStore {
-  if (!cache) cache = loadLocalStore()
+  if (!cache) {
+    cache = loadLocalStore()
+    fallbackBase = cache
+  }
   return cache
+}
+
+export function isDocStoreLoading(): boolean {
+  return fallbackBase !== null
 }
 
 /**
  * 写文档库；返回 false 表示"这次真的没存住"（界面据此提示保存失败）。
  * IndexedDB 可用时：只把变化的那几篇写进去（异步排队），并顺手留一份小的 localStorage 冷备份。
  */
-export function saveStore(store: DocStore): boolean {
-  const prev = cache
-  cache = store
-  expose()
-
+export function saveStore(store: DocStore, onSaved?: (ok: boolean) => void): boolean {
   if (idbOk) {
-    // 界面先渲染过、IndexedDB 才就绪：库可能压根没有这些文档，整库推一次最稳
-    if (needFullPush) {
-      needFullPush = false
-      void idbReplaceAll(store)
-        .then(() => {
-          dirtyIds.clear()
-          pendingRemoved.clear()
-          if (lastWriteFailed) {
-            lastWriteFailed = false
-            onOk?.()
-          }
-          expose()
-        })
-        .catch(() => {
-          needFullPush = true // 没成功，下次接着整库推
-          failWrite(store, store.docs.map((d) => d.id), [])
-        })
-      backupToLocal(store)
-      return !lastWriteFailed
-    }
+    const prev = cache
+    cache = store
+    expose()
 
     const prevById = new Map((prev?.docs ?? []).map((d) => [d.id, d]))
     const changed = store.docs.filter((d) => {
       // 上次没写成功的（或界面先渲染那段时间改过的）：无条件重写一遍
       if (dirtyIds.has(d.id)) return true
       const p = prevById.get(d.id)
-      return !p || p.md !== d.md || p.title !== d.title || p.at !== d.at
+      return p !== d && (!sameContent(d, p) || p?.at !== d.at)
     })
     const removed = [
       ...(prev?.docs ?? []).filter((d) => !store.docs.some((x) => x.id === d.id)).map((d) => d.id),
@@ -321,8 +339,11 @@ export function saveStore(store: DocStore): boolean {
           onOk?.()
         }
         expose()
+        onSaved?.(true)
+      }, () => {
+        failWrite(store, changed.map((d) => d.id), removed)
+        onSaved?.(false)
       })
-      .catch(() => failWrite(store, changed.map((d) => d.id), removed))
     // 冷备份：整库还小就再写一份到 localStorage（图个安心）；大了跳过，免得又撞上限
     backupToLocal(store)
     /* 返回值只说"这次调用有没有同步地失败"。
@@ -334,13 +355,16 @@ export function saveStore(store: DocStore): boolean {
   }
 
   // 没有 IndexedDB（或还没就绪）：完全走老路
-  editedBeforeIdbReady = true
   try {
     localStorage.setItem(DOCS_KEY, JSON.stringify(store))
-    return true
+    cache = store
+    expose()
   } catch {
+    onSaved?.(false)
     return false
   }
+  onSaved?.(true)
+  return true
 }
 
 /** 写失败：记下"哪几篇没写成功"（下次重试），用 localStorage 兜一份，并让界面提示 */
@@ -378,7 +402,10 @@ function backupToLocal(store: DocStore): void {
 export function storeBytes(store: DocStore): number {
   try {
     let n = 64
-    for (const d of store.docs) n += d.md.length + d.title.length + 80
+    for (const d of store.docs) {
+      n += d.md.length + d.title.length + 80
+      for (const version of d.versions ?? []) n += version.md.length + version.title.length + 60
+    }
     return n
   } catch {
     return 0

@@ -4,6 +4,11 @@ import { useEscapeClose } from './useEscapeClose'
 import { exportZhihuMarkdown } from './saveFormats'
 import { loadImageBedConfig, saveImageBedConfig, type ImageBedConfig } from './imageBed'
 import { localImageBlockText, zhihuImageStats, type ZhihuImageStats } from './zhihuImages'
+import { buildExportBody, renderMathml } from './editorActions'
+import { exportDiagrams } from './mermaidDiagrams'
+import ExportPreflightModal from './publication/ExportPreflightModal'
+import { checkExport, type ExportReview } from './publication/exportPreflight'
+import { gotoDocumentNode } from './tiptap/objectReferences'
 
 /** 默认图床仓库（用户自己的公开仓库，图片放这里换公开网址） */
 const DEFAULT_BED_REPO = 'Dadeal167/Dadeal.bit-ImageBed'
@@ -20,6 +25,7 @@ interface Props {
 const TOKEN_KEY = 'md-editor-zhihu-v1'
 const ADDR_KEY = 'md-editor-zhihu-addr-v1'
 const DEFAULT_ADDR = 'http://127.0.0.1:5174'
+const DRAFT_LIST_URL = 'https://www.zhihu.com/creator/manage/creation/draft?type=article'
 
 interface Result {
   ok: boolean
@@ -61,6 +67,25 @@ function prepareZhihuHtml(html: string): { html: string; images: number; videos:
 
 /** 内嵌 data: 图片的张数（这些知乎会接手托管） */
 const imageCountOf = (html: string) => (html.match(/<img[^>]*src="data:/g) ?? []).length
+
+interface DraftPreview { title: string; html: string; document: string; warnings: string[] }
+
+function previewDocument(html: string): string {
+  const template = document.createElement('template')
+  template.innerHTML = html
+  for (const formula of template.content.querySelectorAll('[data-latex]')) {
+    formula.innerHTML = renderMathml(formula.getAttribute('data-latex') ?? '', formula.hasAttribute('data-math-block'))
+  }
+  for (const image of template.content.querySelectorAll('img')) {
+    if (!(image.getAttribute('src') ?? '').startsWith('data:image/')) image.replaceWith(`〔外链图片${image.alt ? ` · ${image.alt}` : ''}〕`)
+  }
+  return `<!doctype html><html lang="zh-CN"><meta charset="utf-8">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; form-action 'none'; base-uri 'none'">
+    <style>body{font:16px/1.7 system-ui,sans-serif;margin:20px;color:#191b1f;background:white;overflow-wrap:anywhere}
+    img{max-width:100%;height:auto}figure{margin:1em 0} table{border-collapse:collapse} td,th{border:1px solid #bbb;padding:4px 8px}
+    pre{overflow:auto;background:#f5f5f5;padding:8px} math[display=block]{margin:1em 0} [data-video-src]::after{content:'〔嵌入视频〕'}</style>
+    <body>${template.innerHTML}</body></html>`
+}
 /** 正文是不是真的空的（只去看 HTML 里的文字） */
 function looksEmpty(html: string): boolean {
   const text = html
@@ -104,12 +129,15 @@ export default function ZhihuModal({ open, editor, title, onClose, onRepairImage
   const [bedOpen, setBedOpen] = useState(false)
   /** 推送前的图片体检：本地路径的图片知乎拿不到，必须当场拦下来（见 zhihuImages.ts） */
   const [imgCheck, setImgCheck] = useState<ZhihuImageStats | null>(null)
+  const [exportReview, setExportReview] = useState<ExportReview | null>(null)
+  const [draftPreview, setDraftPreview] = useState<DraftPreview | null>(null)
+  const previewSequence = useRef(0)
   const timer = useRef<number | null>(null)
   const probeSeq = useRef(0)
   const abortRef = useRef<AbortController | null>(null)
 
   // 上传中不让 Esc 关掉面板（否则进度和结果都看不到，用户会以为没在跑）
-  useEscapeClose(open && !busy, onClose)
+  useEscapeClose(open && !busy && !exportReview, () => draftPreview ? setDraftPreview(null) : onClose())
 
   /* 探测助手（打开时、改地址时、令牌失焦时都会重测）
      - 令牌走请求头，不放 URL（避免留在日志/历史里）
@@ -133,7 +161,11 @@ export default function ZhihuModal({ open, editor, title, onClose, onRepairImage
   }, [editor])
 
   useEffect(() => {
-    if (!open) return
+    if (!open) {
+      previewSequence.current++
+      setDraftPreview(null)
+      return
+    }
     setResult(null)
     setPhase('')
     recheckImages()
@@ -244,9 +276,9 @@ export default function ZhihuModal({ open, editor, title, onClose, onRepairImage
     const t = title.trim() || '未命名文档'
     try {
       await navigator.clipboard.writeText(t)
-      setExportMsg({ ok: true, text: `标题已复制：${t} —— 去知乎标题栏粘一下就行` })
+      setExportMsg({ ok: true, text: '标题已复制。请粘贴到知乎的标题栏。' })
     } catch {
-      setExportMsg({ ok: false, text: `没能自动复制，标题是：${t}（手动选中复制一下）` })
+      setExportMsg({ ok: false, text: `无法访问剪贴板。请手动复制标题「${t}」。` })
     }
   }
 
@@ -266,9 +298,9 @@ export default function ZhihuModal({ open, editor, title, onClose, onRepairImage
     }
   }
 
-  const upload = async () => {
+  const upload = async (preview?: DraftPreview) => {
     if (!editor) return
-    const { html, images: hasImages, videos } = prepareZhihuHtml(editor.getHTML())
+    const { html, images: hasImages, videos } = prepareZhihuHtml(preview?.html ?? buildExportBody(editor, 'zhihu'))
 
     // 本地路径的图片知乎拿不到：传过去只会得到「图片导入失败，请重新上传」，所以在这里就拦住
     // （助手那边也会拦一道，见 scripts/zhihu-assistant.mjs —— 两边都堵，才不会被绕过）
@@ -283,12 +315,13 @@ export default function ZhihuModal({ open, editor, title, onClose, onRepairImage
     if (looksEmpty(html)) {
       setResult({
         ok: false,
-        error: '正文是空的，先写点东西再传。助手上传前会清空知乎上那篇草稿，空内容会把它清掉，所以这里直接拦住了。',
+        error: '正文为空。请添加内容后再保存至知乎草稿箱。',
       })
       return
     }
 
     save()
+    setDraftPreview(null)
     setBusy(true)
     setResult(null)
     // 先给个进度提示（一次上传大约要 40 秒：填内容 + 插公式 + 等自动保存 + 刷新校验）
@@ -303,11 +336,11 @@ export default function ZhihuModal({ open, editor, title, onClose, onRepairImage
             ? '正在填入标题与正文…'
             : seconds < 34
               ? hasImages
-                ? '正在一张张贴图片（走剪贴板真粘贴，每张几秒；会占着你的剪贴板）…'
+                ? '正在通过剪贴板插入图片…'
                 : '正在插入公式…'
               : hasImages
-                ? '正在等知乎存草稿（图片多时要一两分钟，别关助手那个浏览器窗口）…'
-                : '正在等知乎自动保存并校验…',
+                ? '正在等待知乎保存草稿。请保留助手浏览器窗口。'
+                : '正在等待知乎保存并校验草稿…',
       )
     }, 2000)
 
@@ -321,17 +354,17 @@ export default function ZhihuModal({ open, editor, title, onClose, onRepairImage
       const res = await fetch(`${addr}/draft`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-dadealbit-token': token },
-        body: JSON.stringify({ title: title.trim() || '未命名文档', html }),
+        body: JSON.stringify({ title: preview?.title ?? (title.trim() || '未命名文档'), html }),
         signal: controller.signal,
       })
       const json = (await res.json()) as Result
-      const extra: string[] = []
+      const extra: string[] = [...(preview?.warnings ?? [])]
       if (imageCountOf(html) > 0) {
         extra.push(
           `这篇有 ${imageCountOf(html)} 张图片：知乎收到后要自己重新托管一遍，图片多的时候最后那几秒会稍慢`,
         )
       }
-      if (videos > 0) extra.push(`有 ${videos} 个视频没有同步（知乎这边只放了原始链接，需要的话手动补一下）`)
+      if (videos > 0) extra.push(`${videos} 个视频以链接形式保存。`)
       if (!json.ok && !json.error) {
         json.error = '没成功：可能是内容没存住或部分内容漏了，请到知乎草稿箱看一眼这篇。'
       }
@@ -355,6 +388,75 @@ export default function ZhihuModal({ open, editor, title, onClose, onRepairImage
     }
   }
 
+  const showDraftPreview = async () => {
+    if (!editor || busy) return
+    if (__BUILD_MODE__ !== 'effect') { await upload(); return }
+    const sequence = ++previewSequence.current
+    setBusy(true)
+    setPhase('正在生成知乎草稿预览…')
+    setResult(null)
+    const name = title.trim() || '未命名文档'
+    try {
+      const projected = await exportDiagrams(buildExportBody(editor, 'zhihu'), 'docx')
+      if (previewSequence.current !== sequence) return
+      const stats = zhihuImageStats(projected.html)
+      setImgCheck(stats)
+      if (stats.local || looksEmpty(projected.html)) {
+        setResult({ ok: false, error: stats.local ? localImageBlockText(stats) : '正文为空。请添加内容后再保存草稿。' })
+        return
+      }
+      const count = (projected.html.match(/data-zhihu-macro-unresolved/g) ?? []).length
+      const warnings = [projected.failed ? `${projected.failed} 个 Mermaid 图表无法转成图片，将保留代码。` : '',
+        count ? `${count} 个公式使用了未能展开的文档宏。请核对预览。` : ''].filter(Boolean)
+      setDraftPreview({ title: name, html: projected.html, document: previewDocument(projected.html), warnings })
+    } catch {
+      if (previewSequence.current === sequence) setResult({ ok: false, error: '无法生成知乎草稿预览。请重试。' })
+    } finally {
+      setBusy(false)
+      setPhase('')
+    }
+  }
+
+  const requestZhihuExport = (target: 'zhihu' | 'zhihu-draft') => {
+    if (__BUILD_MODE__ === 'effect' && editor) {
+      const issues = checkExport(editor, target)
+      if (issues.length) {
+        setExportReview({ target, issues })
+        return
+      }
+    }
+    if (target === 'zhihu') void exportZhihuMd()
+    else void showDraftPreview()
+  }
+
+  if (exportReview && editor) return <ExportPreflightModal review={exportReview} backLabel="返回知乎面板"
+    onClose={() => setExportReview(null)}
+    onLocate={(pos) => {
+      setExportReview(null)
+      onClose()
+      gotoDocumentNode(editor, pos)
+    }}
+    onContinue={() => {
+      setExportReview(null)
+      if (exportReview.target === 'zhihu') void exportZhihuMd()
+      else void showDraftPreview()
+    }} />
+
+  if (draftPreview) return <div className="zh-modal-mask">
+    <section className="zh-modal zh-modal--source" role="dialog" aria-modal="true" aria-label="知乎草稿预览">
+      <div className="zh-modal__head">知乎草稿预览<button type="button" className="zh-modal__close" aria-label="关闭预览" onClick={() => setDraftPreview(null)}>✕</button></div>
+      <div className="zh-modal__body">
+        <p className="zh-preflight__target">{draftPreview.title}</p>
+        {draftPreview.warnings.map((warning) => <p className="zh-preflight__warning" key={warning}>{warning}</p>)}
+        <iframe className="zh-zhihu-preview" title="知乎正文预览" sandbox="" srcDoc={draftPreview.document} />
+      </div>
+      <div className="zh-modal__footer">
+        <button type="button" className="zh-btn-plain" onClick={() => setDraftPreview(null)}>返回知乎面板</button>
+        <button type="button" className="zh-btn-solid" disabled={busy || !token.trim()} onClick={() => void upload(draftPreview)}>确认保存草稿</button>
+      </div>
+    </section>
+  </div>
+
   return (
     <div
       className="zh-modal-mask"
@@ -367,7 +469,7 @@ export default function ZhihuModal({ open, editor, title, onClose, onRepairImage
         <div className="zh-modal__head">
           <span>
             存到知乎草稿箱
-            <span className="zh-modal__sub">只存草稿，不会发布</span>
+            <span className="zh-modal__sub">保存后可在知乎草稿箱继续编辑</span>
           </span>
           <button type="button" className="zh-modal__close" onClick={onClose} aria-label="关闭">
             ✕
@@ -377,15 +479,15 @@ export default function ZhihuModal({ open, editor, title, onClose, onRepairImage
         <div className="zh-modal__body">
           {/* 推荐路线：导出 .md，用知乎自带的「导入 Markdown」 */}
           <div className="zh-zhihu__export">
-            <div className="zh-zhihu__export-title">推荐：导出 .md，用知乎自带的「导入」</div>
+            <div className="zh-zhihu__export-title">导出 Markdown 文件</div>
             <ol className="zh-zhihu__export-steps">
-              <li>点下面的「导出知乎 .md」，文件会存到浏览器的下载文件夹</li>
-              <li>打开知乎 → 写文章 → 编辑器右上角「导入」→ 选这个文件</li>
-              <li>标题要单独填，点「复制标题」粘过去即可</li>
+              <li>选择「导出知乎用 Markdown」，下载文件。</li>
+              <li>在知乎写作页选择「导入」，打开已下载的文件。</li>
+              <li>选择「复制标题」，将标题粘贴到知乎的标题栏。</li>
             </ol>
             <div className="zh-zhihu__export-btns">
-              <button type="button" className="zh-pill zh-pill--primary" onClick={exportZhihuMd}>
-                导出知乎 .md
+              <button type="button" className="zh-pill zh-pill--primary" disabled={busy} onClick={() => requestZhihuExport('zhihu')}>
+                导出知乎用 Markdown
               </button>
               <button type="button" className="zh-pill" onClick={copyTitle}>
                 复制标题
@@ -393,16 +495,13 @@ export default function ZhihuModal({ open, editor, title, onClose, onRepairImage
             </div>
             <div className="zh-zhihu__tips">
               <div>
-                · 这条路是"要一份能带走的 .md"用的（发给同学、传别的平台、以后重新导入知乎）。
-                公式换成知乎认的写法；本机图片会上传到你的图床换成公开网址
+                Markdown 导出会转换公式，并将内嵌图片上传至已配置的图床。
               </div>
               <div>
-                · 只想发知乎的话，直接点下面的「存到草稿箱」更省事：正文 / 公式 / 图片一次过去，
-                图片由知乎自己托管，不用图床、也不用在知乎里手动导入
+                直接保存草稿时，正文、公式和图片由知乎助手导入。图片由知乎托管。
               </div>
               <div>
-                · 拿不到公开网址时（助手没开、也没填图床令牌）文件照样给，但那几张图上面会各加一行
-                `&gt; 🖼️` 提示 —— 知乎导入时会丢这几张，需要手动补
+                未取得公开链接的图片会在导出文件中标记。请在知乎草稿中补充这些图片。
               </div>
               <div>· 标题、加粗、列表、引用、代码块、表格都照常带过去；标题要单独填，点「复制标题」</div>
               <div>
@@ -499,14 +598,14 @@ export default function ZhihuModal({ open, editor, title, onClose, onRepairImage
             </div>
           </div>
 
-          <div className="zh-zhihu__or">或者（推荐）：让本机助手直接存到知乎草稿箱 —— 不用图床</div>
+          <div className="zh-zhihu__or">通过本机助手保存当前文档</div>
 
           <div className={`zh-zhihu__state zh-zhihu__state--${assistantUp === null ? 'wait' : assistantUp ? 'ok' : 'bad'}`}>
             {assistantUp === null
               ? '正在检查助手…'
               : assistantUp
                 ? '✅ 助手已连接'
-                : '❌ 没检测到助手 —— 双击下面这个文件就能启动它'}
+                : '未连接知乎助手'}
             {assistantUp && (
               <button type="button" className="zh-zhihu__login" onClick={openLogin}>
                 登录知乎 / 检查登录
@@ -518,17 +617,13 @@ export default function ZhihuModal({ open, editor, title, onClose, onRepairImage
               {/* 不打印绝对路径（又长又带用户名，而且分享版里根本没这个文件）——
                   只说"双击哪个文件"，需要完整路径时点按钮复制到剪贴板 */}
               <div>
-                <b>没检测到助手。</b>要开箱即用（不弹黑窗口、带便携 Node）：
-                去 GitHub Releases 下载「<b>知乎助手包</b>」，解压后双击里面的
-                <b>「开始使用.bat」</b>。
+                从 GitHub Releases 下载<b>知乎助手包</b>，解压后运行<b>「开始使用.bat」</b>。
               </div>
               <div>
-                已经 clone 了仓库的话：先 <code>pnpm install</code>，再双击仓库根目录的
-                <b>「启动知乎助手.bat」</b>（它需要本机已装 Node）。
+                本地仓库用户可运行 <code>pnpm install</code> 后，运行<b>「启动知乎助手.bat」</b>。此方式需要安装 Node.js。
               </div>
               <div>
-                想以后再也不用管：助手包里双击一次
-                「安装助手自启 autostart-on.bat」，之后开机它就在后台静默跑着。
+                如需开机启动，可运行助手包中的「安装助手自启 autostart-on.bat」。
               </div>
               <div className="zh-zhihu__row">
                 {launcherPath && (
@@ -538,9 +633,9 @@ export default function ZhihuModal({ open, editor, title, onClose, onRepairImage
                     onClick={async () => {
                       try {
                         await navigator.clipboard.writeText(launcherPath)
-                        setExportMsg({ ok: true, text: '路径已复制到剪贴板（界面上不显示，免得暴露你的用户名路径）。' })
+                        setExportMsg({ ok: true, text: '启动脚本路径已复制。' })
                       } catch {
-                        setExportMsg({ ok: false, text: '复制失败：可以手动在文件管理器里找到你放 HTML 的那个文件夹。' })
+                        setExportMsg({ ok: false, text: '无法访问剪贴板。请在编辑器所在文件夹中查找启动脚本。' })
                       }
                     }}
                   >
@@ -548,15 +643,11 @@ export default function ZhihuModal({ open, editor, title, onClose, onRepairImage
                   </button>
                 )}
                 <button type="button" className="zh-zhihu__recheck" onClick={() => probe(addr, token)}>
-                  我已经启动了，重新检测
+                  重新检测连接
                 </button>
               </div>
               <div>
-                完全没有助手也行：在上面「图床设置」里填一次 GitHub 令牌，
-                「保存」时导出 <b>知乎用 .md</b>，再到知乎写文章页用「导入文档」。
-              </div>
-              <div>
-                （浏览器不允许网页自己启动本地程序，所以启动助手这步得你双击一下。）
+                配置图床后，也可使用「导出知乎用 Markdown」，再通过知乎写作页导入。
               </div>
             </div>
           )}
@@ -643,14 +734,9 @@ export default function ZhihuModal({ open, editor, title, onClose, onRepairImage
           )}
 
           <div className="zh-zhihu__tips">
-            <div>· 存的是草稿，你可以在知乎草稿箱里继续改，确认没问题再自己发布；同名的会更新那一篇，不会越攒越多</div>
-            <div>· 公式会原样变成知乎的公式节点（可再编辑）；文字颜色、标题、列表、引用、代码块、表格都能带过去</div>
-            <div>· 正文（含公式）一次交完；<b>图片是一张张"真粘贴"进去的</b>（等同你自己复制粘贴一张图），
-              位置会自动对上原文里该在的地方</div>
-            <div>· 有图片时：助手会弹出一个浏览器窗口，期间<b>会占用你的剪贴板</b>（每张图约 5–10 秒），推完就还给你；
-              全程走的是你本机的知乎登录态，只存草稿</div>
-            <div>· 心里没底就点「检查一下能不能用（自检）」：它会拿一篇临时草稿（标题「Dadealbit 自检（可删）」）
-              把正文 / 公式 / 图片 / 表格各跑一遍，通过再发真稿子</div>
+            <div>· 使用本机知乎登录会话保存草稿。草稿箱中已有同名文章时，助手会更新该草稿。</div>
+            <div>· 保存后可在知乎草稿箱核对正文、公式、图片和表格。</div>
+            <div>· 处理图片时，助手会打开浏览器窗口并临时使用剪贴板。</div>
           </div>
 
           {/* 本地路径的图片：知乎读不到，传过去只会是「图片导入失败」——所以在按钮上面就摆明 */}
@@ -689,10 +775,9 @@ export default function ZhihuModal({ open, editor, title, onClose, onRepairImage
               {result.ok ? (
                 <>
                   <div>
-                    {result.reusedDraft
-                      ? `✅ 已更新你之前那篇同名草稿：${result.title}`
-                      : `✅ 已存进知乎草稿箱（新建）：${result.title}`}
+                    {result.reusedDraft ? '已更新同名草稿' : '已保存新草稿'}「{result.title}」
                   </div>
+                  <a href={DRAFT_LIST_URL} target="_blank" rel="noopener noreferrer">打开知乎草稿箱</a>
                   <div className="zh-zhihu__dim">
                     公式 {result.formulasInserted ?? 0} 个
                     {result.formulasFailed ? `（失败 ${result.formulasFailed} 个）` : ''}
@@ -744,9 +829,9 @@ export default function ZhihuModal({ open, editor, title, onClose, onRepairImage
           <button
             type="button"
             className="zh-btn-solid"
-            disabled={busy || !token.trim()}
-            title={assistantUp === false ? '还没检测到助手：先双击助手包里的「开始使用.bat」，或确认助手窗口开着、令牌填对了' : ''}
-            onClick={upload}
+            disabled={busy || (__BUILD_MODE__ !== 'effect' && !token.trim())}
+            title={assistantUp === false ? '未连接知乎助手。请启动助手并检查地址和令牌。' : ''}
+            onClick={() => requestZhihuExport('zhihu-draft')}
           >
             {busy ? '正在上传…' : '存到草稿箱'}
           </button>

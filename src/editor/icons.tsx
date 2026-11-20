@@ -217,6 +217,14 @@ export const IconTheme = () => (
   </svg>
 )
 
+/** 特效：一颗四角星 + 一点小星 */
+export const IconSpark = () => (
+  <svg {...base}>
+    <path d="M11 4.5l1.7 4.3 4.3 1.7-4.3 1.7L11 16.5l-1.7-4.3L5 10.5l4.3-1.7z" />
+    <path d="M17.5 15.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z" opacity="0.65" />
+  </svg>
+)
+
 export const IconSearch = () => (
   <svg {...base}>
     <circle cx="11" cy="11" r="6.5" />
