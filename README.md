@@ -40,6 +40,26 @@ pnpm build
 
 打开生成的 `Dadealbit Markdown 编辑器.html`。开发服务器用 `pnpm dev`，Windows 上安装 Edge 后可用 `pnpm check:effects` 跑核心回归。知乎助手包用 `pnpm make:bundle` 构建。
 
+## 功能示例
+
+### 工作区公式搜索
+
+在多篇讲义中搜索同一个公式，点击命中项打开并定位。
+
+![工作区搜索结果与二次函数讲义](docs/screenshots/workspace.png)
+
+### Word 与 PDF 排版
+
+导出前可以设置纸张、页边距、页眉页脚和按章分页。
+
+![Word 与 PDF 的排版设置](docs/screenshots/publication.png)
+
+### 动态壁纸与毛玻璃
+
+为正文选择材质和透明度，并从历史记录重新应用用过的背景。
+
+![月夜背景、毛玻璃正文与壁纸设置](docs/screenshots/wallpaper.png)
+
 ## 许可
 
 项目使用 [LICENSE](LICENSE) 中所列的 Dadealbit 使用许可。WebWallGL、Mediabunny 和可选的 Spine 运行库适用各自的许可。
