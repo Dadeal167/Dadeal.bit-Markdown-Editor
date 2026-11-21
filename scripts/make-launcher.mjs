@@ -200,7 +200,8 @@ exit /b 1
 const OPEN_PS1 = `param(
   [Parameter(Mandatory = $true)][string]$Html,
   [Parameter(Mandatory = $true)][string]$Token,
-  [Parameter(Mandatory = $true)][string]$Port
+  [Parameter(Mandatory = $true)][string]$Port,
+  [switch]$Quiet
 )
 $ErrorActionPreference = 'Continue'
 $url = ([uri]$Html).AbsoluteUri + '#zhihu-token=' + $Token + '&zhihu-addr=http://127.0.0.1:' + $Port
@@ -242,11 +243,11 @@ function Start-WithKnownBrowser([string]$u) {
 }
 
 if (Start-WithDefaultBrowser $url) {
-  Write-Output ('Opened: ' + $url)
+  if (-not $Quiet) { Write-Output ('Opened: ' + $url) }
   exit 0
 }
 if (Start-WithKnownBrowser $url) {
-  Write-Output ('Opened: ' + $url)
+  if (-not $Quiet) { Write-Output ('Opened: ' + $url) }
   exit 0
 }
 Write-Output 'Could not find a browser to open the editor.'

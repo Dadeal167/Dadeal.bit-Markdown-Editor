@@ -17,7 +17,7 @@ import { resolve } from 'node:path'
 
 const ROOT = resolve(import.meta.dirname, '..')
 const { version } = JSON.parse(readFileSync(resolve(ROOT, 'package.json'), 'utf-8'))
-const ZIP = resolve(process.argv[2] ?? resolve(ROOT, '.probe', 'release', `Dadealbit-Zhihu-Assistant-v${version}.zip`))
+const ZIP = resolve(process.argv[2] ?? resolve(ROOT, '.probe', 'release', `Dadealbit-Zhihu-Assistant-v${version.replace(/\.0$/, '')}.zip`))
 const EXTRACT = resolve(ROOT, '.probe', 'bundle-extract')
 
 const results = []
@@ -54,6 +54,9 @@ const must = [
   'Dadealbit Markdown 编辑器.html',
   'LICENSE',
   '使用说明.txt',
+  '安装知乎助手.bat',
+  'assistant/browser-zhihu-launcher.mjs',
+  'assistant/launch-from-browser.vbs',
   // .bat 统一放在「启动器」子文件夹里（根目录只留编辑器、说明和两个数据文件夹）
   '启动器/开始使用.bat',
   '启动器/停止助手.bat',
@@ -67,7 +70,7 @@ const must = [
   'assistant/node_modules/playwright-core/package.json',
 ]
 const missing = must.filter((f) => !existsSync(resolve(EXTRACT, f.replace(/\//g, '\\'))))
-check('该有的文件都在（编辑器/说明/4 个 bat/便携 Node/助手 + 依赖）', missing.length === 0, missing.join('、') || `${must.length} 项`)
+check('编辑器、安装入口、便携 Node 和助手依赖齐全', missing.length === 0, missing.join('、') || `${must.length} 项`)
 
 /* 发布包只应包含当前编辑器，不附带本机壁纸或单独的游戏素材。 */
 const allFiles = []

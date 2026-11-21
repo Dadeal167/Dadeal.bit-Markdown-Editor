@@ -26,7 +26,8 @@ import { bundleNodeRuntime, writeLauncherFiles } from './make-launcher.mjs'
 const ROOT = resolve(import.meta.dirname, '..')
 /* 版本号从 package.json 读，别再硬编码 —— 之前写死 v1.0.0，
    发 1.1 时差点把新包覆盖到旧文件名上（发布的附件名是永久的，改不了）。 */
-const VERSION = `v${JSON.parse(readFileSync(resolve(ROOT, 'package.json'), 'utf8')).version}`
+const { version } = JSON.parse(readFileSync(resolve(ROOT, 'package.json'), 'utf8'))
+const VERSION = `v${version.replace(/\.0$/, '')}`
 const OUT_DIR = resolve(ROOT, '.probe', 'release')
 const STAGE = resolve(OUT_DIR, '知乎助手包')
 const ZIP = resolve(OUT_DIR, `Dadealbit-Zhihu-Assistant-${VERSION}.zip`)
@@ -94,12 +95,37 @@ writeFileSync(resolve(STAGE, '启动器', '启动知乎助手.bat'), ASSIST_BAT.
 const asstDir = resolve(STAGE, 'assistant')
 mkdirSync(resolve(asstDir, 'node_modules'), { recursive: true })
 cpSync(ASSIST, resolve(asstDir, 'zhihu-assistant.mjs'))
+cpSync(resolve(ROOT, 'scripts', 'browser-zhihu-launcher.mjs'), resolve(asstDir, 'browser-zhihu-launcher.mjs'))
+
+const setupBat = `@echo off
+setlocal
+"%~dp0runtime\\node.exe" "%~dp0assistant\\browser-zhihu-launcher.mjs" install
+if errorlevel 1 (
+  pause
+  exit /b 1
+)
+exit /b 0
+`
+writeFileSync(resolve(STAGE, '安装知乎助手.bat'), setupBat.replace(/\n/g, '\r\n'), 'ascii')
+
+const browserVbs = `If WScript.Arguments.Count <> 1 Then WScript.Quit 1
+Dim url, shell, fs, folder, root, q
+url = LCase(WScript.Arguments(0))
+If url <> "dadealbit-zhihu://start" And url <> "dadealbit-zhihu://start/" Then WScript.Quit 1
+Set shell = CreateObject("WScript.Shell")
+Set fs = CreateObject("Scripting.FileSystemObject")
+folder = fs.GetParentFolderName(WScript.ScriptFullName)
+root = fs.GetParentFolderName(folder)
+q = Chr(34)
+shell.Run q & fs.BuildPath(root, "runtime\\node.exe") & q & " " & q & fs.BuildPath(folder, "browser-zhihu-launcher.mjs") & q & " start", 0, False
+`
+writeFileSync(resolve(asstDir, 'launch-from-browser.vbs'), browserVbs.replace(/\n/g, '\r\n'), 'ascii')
 cpSync(resolve(ROOT, 'scripts', 'imageFormat.mjs'), resolve(asstDir, 'imageFormat.mjs'))
 cpSync(PW_CORE, resolve(asstDir, 'node_modules', 'playwright-core'), { recursive: true, dereference: true })
 writeFileSync(
   resolve(asstDir, 'package.json'),
   JSON.stringify(
-    { name: 'dadealbit-zhihu-assistant', version: VERSION.replace(/^v/, ''), private: true, type: 'module', scripts: { start: 'node zhihu-assistant.mjs' }, dependencies: { 'playwright-core': '^1.54.1' } },
+    { name: 'dadealbit-zhihu-assistant', version, private: true, type: 'module', scripts: { start: 'node zhihu-assistant.mjs' }, dependencies: { 'playwright-core': '^1.54.1' } },
     null,
     2,
   ) + '\n',
@@ -119,9 +145,9 @@ const README = `Dadealbit Markdown 编辑器 · 知乎助手包 ${VERSION}
 
 【怎么用】
 1. 解压到任意文件夹（**别放在只读目录**，助手要往自己的目录里写东西）
-2. 双击「启动器」文件夹里的「开始使用.bat」——它会在后台悄悄启动助手（不弹黑窗口）、自动带上令牌、并打开编辑器
-3. 编辑器里点工具栏「知乎」，看到「✅ 助手已连接」就能用了
-4. 写完后点「存到草稿箱」：它只存草稿、**不会发布**，你到知乎里接着改、确认没问题再自己发
+2. 第一次双击根目录的「安装知乎助手.bat」。安装程序会注册网页启动入口、自动配对并打开编辑器
+3. 之后直接双击这个文件夹里的编辑器 HTML。打开「知乎」后点击「启动知乎助手」，并在浏览器弹出提示时允许打开本机助手
+4. 写完后可选择「存到草稿箱」。如移动助手包、换浏览器或清除过网页数据，请重新运行安装程序配对
 
 【不想每次都双击？】
 双击一次「启动器」里的「安装助手自启 autostart-on.bat」，以后开机它就在后台静默跑着；

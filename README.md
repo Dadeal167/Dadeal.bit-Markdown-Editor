@@ -4,9 +4,9 @@
 
 ## 下载与使用
 
-- [下载当前版本 v1.2.1](https://github.com/Dadeal167/Dadeal.bit-Markdown-Editor/releases/latest)。下载 `Dadealbit-Markdown-Editor-v1.2.1.html`，用 Edge 或 Chrome 打开。日常编辑可离线使用。
+- [下载当前版本 v1.2](https://github.com/Dadeal167/Dadeal.bit-Markdown-Editor/releases/latest)。下载 `Dadealbit-Markdown-Editor-v1.2.html`，用 Edge 或 Chrome 打开。日常编辑可离线使用。
 - 从旧版升级前，用原来的浏览器和 HTML 打开编辑器，把文档导出为 Markdown。浏览器按文件路径隔离本地存储，换文件名、目录或浏览器后可重新导入。
-- 如需「存到知乎草稿箱」，可在同一 Release 下载 Windows 知乎助手包。解压后双击「启动器 → 开始使用.bat」，登录知乎后从编辑器里的「知乎」面板操作。
+- 如需自动保存到知乎草稿箱，可另外下载同一版本的 Windows 知乎助手包。解压后首次运行「安装知乎助手.bat」，之后打开包内 HTML，从「知乎」面板启动助手。手动导入可在单文件 HTML 中选择「导出知乎用 Markdown」，再打开知乎写作页导入。
 - 从源码启动的 Windows 桌面编辑器可在「知乎」面板启动、连接或停止助手，自动填写连接信息。已用外部启动器开启的助手仍由原启动器管理。
 
 ## 写作与工作区

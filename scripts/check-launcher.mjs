@@ -91,8 +91,8 @@ check('有 playwright-core', existsSync(resolve(FOLDER, 'assistant', 'node_modul
 /* 目录整洁：.bat 全部收进「启动器」子文件夹，根目录只留编辑器 + 说明 + 两个数据文件夹
    （原来根目录混着 5 个 .bat 和 _open-editor.ps1，用户看不出该点哪个） */
 {
-  const stray = existsSync(FOLDER) ? readdirSync(FOLDER).filter((f) => /\.(bat|ps1)$/i.test(f)) : ['(文件夹不存在)']
-  check('根目录没有散落的 .bat / .ps1（都收进「启动器」）', stray.length === 0, stray.join('、') || '干净')
+  const stray = existsSync(FOLDER) ? readdirSync(FOLDER).filter((f) => f !== '安装知乎助手.bat' && /\.(bat|ps1)$/i.test(f)) : ['(文件夹不存在)']
+  check('根目录集中提供安装入口', stray.length === 0, stray.join('、') || '干净')
 }
 if (!existsSync(START) || !existsSync(ASSIST) || !existsSync(HTML)) {
   console.log('\n缺关键文件，后面的实测没法跑。')

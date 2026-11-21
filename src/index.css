@@ -1481,6 +1481,10 @@ textarea::placeholder {
   margin-bottom: 10px;
 }
 
+.zh-zhihu__write-link {
+  text-decoration: none;
+}
+
 .zh-zhihu__or {
   font-size: 12px;
   color: var(--zh-secondary);

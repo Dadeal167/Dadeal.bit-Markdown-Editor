@@ -26,6 +26,7 @@ const TOKEN_KEY = 'md-editor-zhihu-v1'
 const ADDR_KEY = 'md-editor-zhihu-addr-v1'
 const DEFAULT_ADDR = 'http://127.0.0.1:5174'
 const DRAFT_LIST_URL = 'https://www.zhihu.com/creator/manage/creation/draft?type=article'
+const ZHIHU_WRITE_URL = 'https://zhuanlan.zhihu.com/write'
 
 function loadAssistantConfig() {
   try {
@@ -226,6 +227,39 @@ export default function ZhihuModal({ open, editor, title, onClose, onRepairImage
     }
   }
 
+  const browserLauncher = !desktop && window.location.protocol === 'file:' && /Windows/i.test(navigator.userAgent)
+  const startBrowserAssistant = async () => {
+    if (assistantOperation) return
+    if (addr !== DEFAULT_ADDR || !/^[0-9a-f]{32,64}$/.test(token)) {
+      setLoginMsg('首次使用请运行「安装知乎助手.bat」，然后在同一浏览器打开安装包内的 HTML。')
+      return
+    }
+    setAssistantOperation('start')
+    setLoginMsg('如浏览器询问是否打开知乎助手，请选择「打开」。')
+    const seq = ++probeSeq.current
+    try {
+      window.location.assign('dadealbit-zhihu://start')
+      const deadline = Date.now() + 18000
+      while (seq === probeSeq.current && Date.now() < deadline) {
+        const response = await fetch(`${DEFAULT_ADDR}/status`, {
+          headers: { 'x-dadealbit-token': token }, signal: AbortSignal.timeout(800),
+        }).catch(() => null)
+        if (response?.ok && (await response.json().catch(() => null))?.ok === true) {
+          if (seq !== probeSeq.current) return
+          setAssistantUp(true)
+          setLoginMsg(null)
+          return
+        }
+        await new Promise(resolve => window.setTimeout(resolve, 600))
+      }
+      if (seq === probeSeq.current) setLoginMsg('未连接到助手。请确认已允许浏览器打开助手，或重新运行安装程序配对。')
+    } catch {
+      if (seq === probeSeq.current) setLoginMsg('浏览器无法打开助手。请先运行「安装知乎助手.bat」。')
+    } finally {
+      setAssistantOperation(undefined)
+    }
+  }
+
   /** 导出「给知乎导入用的 .md」
    *  实现放在 saveFormats.ts —— 工具栏「保存」菜单、右下角按钮、这个面板用的是同一份逻辑，
    *  省得三处行为不一致（用户就因为"保存 .md 直接拿去知乎导入"踩过坑）。 */
@@ -272,23 +306,6 @@ export default function ZhihuModal({ open, editor, title, onClose, onRepairImage
     }
   }
 
-  /** 双击打开的 HTML 时，算出"同文件夹里的启动器"完整路径 ——
-   *  浏览器不允许网页自己拉起本地程序（实测：file:// 页面点 .bat 链接只会跳过去、不会执行），
-   *  所以「复制路径」这个按钮得有个值可复制。
-   *
-   *  ⚠️ 但**不要把它打印在界面上**：那串东西又长又技术、还带着用户名（用户提过这个），
-   *  而且分享版根本没有这个文件 —— 显出来只会让人去找一个不存在的东西。 */
-  const launcherPath = (() => {
-    try {
-      if (location.protocol !== 'file:') return ''
-      const p = decodeURIComponent(location.pathname).replace(/^\//, '').replace(/\//g, '\\')
-      const dir = p.slice(0, p.lastIndexOf('\\'))
-      return dir ? `${dir}\\开始使用.bat` : ''
-    } catch {
-      return ''
-    }
-  })()
-
   /** 复制标题（知乎导入不带标题，需要在知乎里单独填） */
   const copyTitle = async () => {
     const t = title.trim() || '未命名文档'
@@ -313,7 +330,7 @@ export default function ZhihuModal({ open, editor, title, onClose, onRepairImage
       setLoginMsg(json.hint ?? json.error ?? (json.loggedIn ? '已经登录了' : '请在弹出的窗口里扫码登录'))
     } catch {
       setLoginMsg(desktop ? '无法连接助手。请在面板中重新启动或检查助手连接。'
-        : '无法连接助手。请运行助手包里的「开始使用.bat」。')
+        : '无法连接助手。请从知乎面板启动助手。')
     }
   }
 
@@ -374,7 +391,7 @@ export default function ZhihuModal({ open, editor, title, onClose, onRepairImage
           ? `等了 ${Math.round(timeoutMs / 60000)} 分钟还没结果。助手可能还在传（草稿箱里可能已经有了），可以先去知乎看一眼；如果一直没有，说明卡住了，重开一次助手再试。`
           : desktop
             ? '无法连接知乎助手。请在此面板重新启动助手后重试。'
-            : '无法连接知乎助手。请运行助手包中的「开始使用.bat」后重试。',
+            : '无法连接知乎助手。请从知乎面板启动助手后重试。',
       })
     } finally {
       window.clearTimeout(timeoutId)
@@ -475,16 +492,19 @@ export default function ZhihuModal({ open, editor, title, onClose, onRepairImage
         <div className="zh-modal__body">
           {/* 推荐路线：导出 .md，用知乎自带的「导入 Markdown」 */}
           <div className="zh-zhihu__export">
-            <div className="zh-zhihu__export-title">导出 Markdown 文件</div>
+            <div className="zh-zhihu__export-title">导出到知乎</div>
             <ol className="zh-zhihu__export-steps">
               <li>选择「导出知乎用 Markdown」，下载文件。</li>
-              <li>在知乎写作页选择「导入」，打开已下载的文件。</li>
+              <li>打开知乎写作页，选择「导入」，打开已下载的文件。</li>
               <li>选择「复制标题」，将标题粘贴到知乎的标题栏。</li>
             </ol>
             <div className="zh-zhihu__export-btns">
               <button type="button" className="zh-pill zh-pill--primary" disabled={busy} onClick={() => requestZhihuExport('zhihu')}>
                 导出知乎用 Markdown
               </button>
+              <a className="zh-pill zh-zhihu__write-link" href={ZHIHU_WRITE_URL} target="_blank" rel="noopener noreferrer">
+                打开知乎写作页
+              </a>
               <button type="button" className="zh-pill" onClick={copyTitle}>
                 复制标题
               </button>
@@ -594,7 +614,7 @@ export default function ZhihuModal({ open, editor, title, onClose, onRepairImage
             </div>
           </div>
 
-          <div className="zh-zhihu__or">通过本机助手保存当前文档</div>
+          <div className="zh-zhihu__or">自动保存草稿（需要本机助手）</div>
 
           <div className={`zh-zhihu__state zh-zhihu__state--${assistantUp === null ? 'wait' : assistantUp ? 'ok' : 'bad'}`}>
             {assistantUp === null
@@ -618,44 +638,20 @@ export default function ZhihuModal({ open, editor, title, onClose, onRepairImage
               {assistantOperation === 'stop' ? '正在关闭助手…' : '停止知乎助手'}
             </button>}
           </div>}
-          {!desktop && assistantUp === false && (
-            <div className="zh-zhihu__msg">
-              {/* 不打印绝对路径（又长又带用户名，而且分享版里根本没这个文件）——
-                  只说"双击哪个文件"，需要完整路径时点按钮复制到剪贴板 */}
-              <div>
-                从 GitHub Releases 下载<b>知乎助手包</b>，解压后运行<b>「开始使用.bat」</b>。
-              </div>
-              <div>
-                本地仓库用户可运行 <code>pnpm install</code> 后，运行<b>「启动知乎助手.bat」</b>。此方式需要安装 Node.js。
-              </div>
-              <div>
-                如需开机启动，可运行助手包中的「安装助手自启 autostart-on.bat」。
-              </div>
-              <div className="zh-zhihu__row">
-                {launcherPath && (
-                  <button
-                    type="button"
-                    className="zh-zhihu__recheck"
-                    onClick={async () => {
-                      try {
-                        await navigator.clipboard.writeText(launcherPath)
-                        setExportMsg({ ok: true, text: '启动脚本路径已复制。' })
-                      } catch {
-                        setExportMsg({ ok: false, text: '无法访问剪贴板。请在编辑器所在文件夹中查找启动脚本。' })
-                      }
-                    }}
-                  >
-                    复制本机路径
-                  </button>
-                )}
-                <button type="button" className="zh-zhihu__recheck" onClick={() => probe(addr, token)}>
-                  重新检测连接
-                </button>
-              </div>
-              <div>
-                配置图床后，也可使用「导出知乎用 Markdown」，再通过知乎写作页导入。
-              </div>
+          {browserLauncher && assistantUp !== true && (
+            <div className="zh-zhihu__row">
+              <button type="button" className="zh-btn-plain" disabled={busy || !!assistantOperation}
+                onClick={() => void startBrowserAssistant()}>
+                {assistantOperation === 'start' ? '正在启动助手…' : '启动知乎助手'}
+              </button>
             </div>
+          )}
+          {!desktop && assistantUp === false && (
+            <p className="zh-zhihu__msg">
+              首次连接请下载并解压知乎助手包，运行「安装知乎助手.bat」。
+              {' '}<a href="https://github.com/Dadeal167/Dadeal.bit-Markdown-Editor/releases/latest"
+                target="_blank" rel="noopener noreferrer">下载知乎助手包</a>
+            </p>
           )}
           {loginMsg && <div className="zh-zhihu__msg">{loginMsg}</div>}
 

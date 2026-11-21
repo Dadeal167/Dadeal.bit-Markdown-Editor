@@ -43,7 +43,14 @@ const tokenArg = argv.indexOf('--token')
 const HOME = homedir()
 const PROFILE_DIR = resolve(HOME, '.dadealbit', 'zhihu-profile')
 const STATE_DIR = resolve(HOME, '.dadealbit')
-const TOKEN = tokenArg >= 0 ? String(argv[tokenArg + 1]) : randomBytes(16).toString('hex')
+let browserToken
+if (!MANAGED && PORT === 5174) {
+  try {
+    const stored = readFileSync(resolve(STATE_DIR, 'browser-token.txt'), 'utf8').trim()
+    if (/^[0-9a-f]{32,64}$/.test(stored)) browserToken = stored
+  } catch { /* One-time browser setup is optional. */ }
+}
+const TOKEN = tokenArg >= 0 ? String(argv[tokenArg + 1]) : browserToken ?? randomBytes(16).toString('hex')
 const WRITE_URL = 'https://zhuanlan.zhihu.com/write'
 /** 文章草稿列表页：用它按标题找回已有草稿（知乎写作页每次打开都是一篇新草稿） */
 const DRAFT_LIST_URL = 'https://www.zhihu.com/creator/manage/creation/draft?type=article'
@@ -1863,6 +1870,8 @@ server.listen(PORT, '127.0.0.1', () => {
   console.log('  ⚠️ 令牌等同于"往你知乎账号写草稿"的权限，别发给别人')
   console.log('  这个窗口要一直开着；关掉它助手就停了。')
   console.log(`${line}\n`)
+  // 浏览器启动已完成配对，保留用户的剪贴板。
+  if (browserToken === TOKEN) return
   // 顺手把令牌放进剪贴板，省得手抄（会覆盖你剪贴板里原有的内容）
   try {
     execFile('powershell', ['-NoProfile', '-Command', `Set-Clipboard -Value '${TOKEN}'`], () => {})
