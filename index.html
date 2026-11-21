@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Dadealbit Markdown 编辑器</title>
+<style>:root{color-scheme:light dark}body{font-family:system-ui,sans-serif;margin:2rem}</style>
+<p role="status" id="status">正在加载 Dadealbit Markdown 编辑器…</p>
+<script type="module">
+try {
+  const files = ["editor-v1.2-a.bin","editor-v1.2-b.bin"]
+  const chunks = await Promise.all(files.map(async file => {
+    const res = await fetch(new URL(file, location.href))
+    if (!res.ok) throw new Error('下载失败')
+    return res.arrayBuffer()
+  }))
+  const stream = new Blob(chunks).stream().pipeThrough(new DecompressionStream('gzip'))
+  const bytes = await new Response(stream).arrayBuffer()
+  const digest = await crypto.subtle.digest('SHA-256', bytes)
+  const hash = [...new Uint8Array(digest)].map(value => value.toString(16).padStart(2,'0')).join('')
+  if (hash !== '4fd29c97e5dcfeb4b3cfbe152b23483b0b0fbcbf133a75bf41546655a16105c1') throw new Error('文件校验失败')
+  const editor = new TextDecoder().decode(bytes)
+  document.open()
+  document.write(editor)
+  document.close()
+} catch {
+  document.getElementById('status').textContent = '编辑器加载失败，请刷新页面后重试。'
+}
+</script>
+</html>
