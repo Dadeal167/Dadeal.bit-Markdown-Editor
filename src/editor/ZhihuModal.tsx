@@ -27,6 +27,14 @@ const ADDR_KEY = 'md-editor-zhihu-addr-v1'
 const DEFAULT_ADDR = 'http://127.0.0.1:5174'
 const DRAFT_LIST_URL = 'https://www.zhihu.com/creator/manage/creation/draft?type=article'
 
+function loadAssistantConfig() {
+  try {
+    return { address: localStorage.getItem(ADDR_KEY) || DEFAULT_ADDR, token: localStorage.getItem(TOKEN_KEY) || '' }
+  } catch {
+    return { address: DEFAULT_ADDR, token: '' }
+  }
+}
+
 interface Result {
   ok: boolean
   saved?: boolean
@@ -43,6 +51,8 @@ interface Result {
   imagesFailed?: number
   imagesExpected?: number
   imagesInDraft?: number
+  tablesInDraft?: number
+  draftUrl?: string
   warnings?: string[]
   error?: string
   needLogin?: boolean
@@ -100,24 +110,15 @@ function looksEmpty(html: string): boolean {
 export default function ZhihuModal({ open, editor, title, onClose, onRepairImages }: Props) {
   /** 导出 .md 的反馈（和助手上传的 result 分开，互不干扰） */
   const [exportMsg, setExportMsg] = useState<{ ok: boolean; text: string } | null>(null)
-  const [addr, setAddr] = useState(() => {
-    try {
-      return localStorage.getItem(ADDR_KEY) ?? DEFAULT_ADDR
-    } catch {
-      return DEFAULT_ADDR
-    }
-  })
-  const [token, setToken] = useState(() => {
-    try {
-      return localStorage.getItem(TOKEN_KEY) ?? ''
-    } catch {
-      return ''
-    }
-  })
+  const [addr, setAddr] = useState(() => loadAssistantConfig().address)
+  const [token, setToken] = useState(() => loadAssistantConfig().token)
   const [busy, setBusy] = useState(false)
   const [phase, setPhase] = useState('')
   const [result, setResult] = useState<Result | null>(null)
   const [assistantUp, setAssistantUp] = useState<boolean | null>(null)
+  const [assistantOperation, setAssistantOperation] = useState<'start' | 'stop'>()
+  const managedConnection = useRef<{ address: string; token: string } | null>(null)
+  const managedAssistant = managedConnection.current !== null
   const [loginMsg, setLoginMsg] = useState<string | null>(null)
   const [selfChecking, setSelfChecking] = useState(false)
   const [selfCheck, setSelfCheck] = useState<SelfCheckResult | null>(null)
@@ -132,7 +133,6 @@ export default function ZhihuModal({ open, editor, title, onClose, onRepairImage
   const [exportReview, setExportReview] = useState<ExportReview | null>(null)
   const [draftPreview, setDraftPreview] = useState<DraftPreview | null>(null)
   const previewSequence = useRef(0)
-  const timer = useRef<number | null>(null)
   const probeSeq = useRef(0)
   const abortRef = useRef<AbortController | null>(null)
 
@@ -171,17 +171,10 @@ export default function ZhihuModal({ open, editor, title, onClose, onRepairImage
     recheckImages()
     // 每次打开面板都重新读一遍配置：启动器可能刚把令牌写进 localStorage（见 ZhihuEditor 里的
     // 「#zhihu-token=…」处理），而面板是在编辑器第一次渲染时就挂载的，不重读会拿着旧值。
-    let nextAddr = DEFAULT_ADDR
-    let nextToken = ''
-    try {
-      nextAddr = localStorage.getItem(ADDR_KEY) || DEFAULT_ADDR
-      nextToken = localStorage.getItem(TOKEN_KEY) || ''
-    } catch {
-      /* 读不到就用默认值 */
-    }
-    setAddr(nextAddr)
-    setToken(nextToken)
-    probe(nextAddr, nextToken)
+    const connection = managedConnection.current ?? loadAssistantConfig()
+    setAddr(connection.address)
+    setToken(connection.token)
+    probe(connection.address, connection.token)
     // 依赖里**不要**放 addr / token：`save()` 只在失焦时才写 localStorage，
     // 一旦 addr 进了依赖，打字 → 重跑本效果 → 从 localStorage 读回旧值 → 把刚打的字改回去，
     // 地址栏会变成完全打不进字（audit:zhihu 逮到过这个）。
@@ -190,7 +183,6 @@ export default function ZhihuModal({ open, editor, title, onClose, onRepairImage
 
   useEffect(() => {
     return () => {
-      if (timer.current) window.clearInterval(timer.current)
       abortRef.current?.abort()
     }
   }, [])
@@ -198,11 +190,39 @@ export default function ZhihuModal({ open, editor, title, onClose, onRepairImage
   if (!open) return null
 
   const save = () => {
+    if (managedConnection.current) return
     try {
       localStorage.setItem(TOKEN_KEY, token)
       localStorage.setItem(ADDR_KEY, addr)
     } catch {
       /* 存不下就算了 */
+    }
+  }
+
+  const desktop = window.dadealbitDesktop
+  const manageAssistant = async (operation: 'start' | 'stop') => {
+    if (!desktop || assistantOperation) return
+    setAssistantOperation(operation)
+    setLoginMsg(null)
+    try {
+      if (operation === 'start') {
+        const connection = await desktop.startZhihuAssistant()
+        setAddr(connection.address)
+        setToken(connection.token)
+        managedConnection.current = connection.managed ? connection : null
+        probe(connection.address, connection.token)
+      } else {
+        await desktop.stopZhihuAssistant()
+        managedConnection.current = null
+        const connection = loadAssistantConfig()
+        setAddr(connection.address)
+        setToken(connection.token)
+        probe(connection.address, connection.token)
+      }
+    } catch (error) {
+      setLoginMsg(error instanceof Error ? error.message : '无法管理知乎助手。')
+    } finally {
+      setAssistantOperation(undefined)
     }
   }
 
@@ -234,8 +254,6 @@ export default function ZhihuModal({ open, editor, title, onClose, onRepairImage
     setSelfCheck(null)
     try {
       const ctrl = new AbortController()
-      // 注意别用 `const timer`：外面已经有一个叫 timer 的 ref，同名会把它遮住，
-      // 关面板时就清不掉这个 180 秒的超时了（自检/请求还会继续跑）
       const timeoutId = window.setTimeout(() => ctrl.abort(), 180000)
       const res = await fetch(`${addr}/selfcheck`, {
         method: 'POST',
@@ -294,7 +312,8 @@ export default function ZhihuModal({ open, editor, title, onClose, onRepairImage
       const json = (await res.json()) as { ok?: boolean; loggedIn?: boolean; hint?: string; error?: string }
       setLoginMsg(json.hint ?? json.error ?? (json.loggedIn ? '已经登录了' : '请在弹出的窗口里扫码登录'))
     } catch {
-      setLoginMsg('连不上助手：先双击助手包里的「开始使用.bat」（它会在后台把助手拉起来）')
+      setLoginMsg(desktop ? '无法连接助手。请在面板中重新启动或检查助手连接。'
+        : '无法连接助手。请运行助手包里的「开始使用.bat」。')
     }
   }
 
@@ -324,25 +343,7 @@ export default function ZhihuModal({ open, editor, title, onClose, onRepairImage
     setDraftPreview(null)
     setBusy(true)
     setResult(null)
-    // 先给个进度提示（一次上传大约要 40 秒：填内容 + 插公式 + 等自动保存 + 刷新校验）
-    let seconds = 0
-    setPhase('正在连接助手…')
-    timer.current = window.setInterval(() => {
-      seconds += 2
-      setPhase(
-        seconds < 8
-          ? '正在打开知乎写作页…'
-          : seconds < 20
-            ? '正在填入标题与正文…'
-            : seconds < 34
-              ? hasImages
-                ? '正在通过剪贴板插入图片…'
-                : '正在插入公式…'
-              : hasImages
-                ? '正在等待知乎保存草稿。请保留助手浏览器窗口。'
-                : '正在等待知乎保存并校验草稿…',
-      )
-    }, 2000)
+    setPhase('正在保存并核验知乎草稿，请保留助手窗口。')
 
     // 有图片时整篇要几分钟，超时给足；超时后明确告诉用户"可能还在跑"
     const controller = new AbortController()
@@ -359,14 +360,9 @@ export default function ZhihuModal({ open, editor, title, onClose, onRepairImage
       })
       const json = (await res.json()) as Result
       const extra: string[] = [...(preview?.warnings ?? [])]
-      if (imageCountOf(html) > 0) {
-        extra.push(
-          `这篇有 ${imageCountOf(html)} 张图片：知乎收到后要自己重新托管一遍，图片多的时候最后那几秒会稍慢`,
-        )
-      }
       if (videos > 0) extra.push(`${videos} 个视频以链接形式保存。`)
-      if (!json.ok && !json.error) {
-        json.error = '没成功：可能是内容没存住或部分内容漏了，请到知乎草稿箱看一眼这篇。'
+      if (!json.ok && !json.error && !json.saved) {
+        json.error = '未能确认草稿已保存。请在知乎草稿箱中核对。'
       }
       json.warnings = [...(json.warnings ?? []), ...extra]
       setResult(json)
@@ -376,13 +372,13 @@ export default function ZhihuModal({ open, editor, title, onClose, onRepairImage
         ok: false,
         error: aborted
           ? `等了 ${Math.round(timeoutMs / 60000)} 分钟还没结果。助手可能还在传（草稿箱里可能已经有了），可以先去知乎看一眼；如果一直没有，说明卡住了，重开一次助手再试。`
-          : '连不上助手。先双击助手包里的「开始使用.bat」——它会在后台启动助手并把令牌自动填好；手动那条路是「启动知乎助手.bat」，窗口里会打印令牌。',
+          : desktop
+            ? '无法连接知乎助手。请在此面板重新启动助手后重试。'
+            : '无法连接知乎助手。请运行助手包中的「开始使用.bat」后重试。',
       })
     } finally {
       window.clearTimeout(timeoutId)
       abortRef.current = null
-      if (timer.current) window.clearInterval(timer.current)
-      timer.current = null
       setBusy(false)
       setPhase('')
     }
@@ -471,7 +467,7 @@ export default function ZhihuModal({ open, editor, title, onClose, onRepairImage
             存到知乎草稿箱
             <span className="zh-modal__sub">保存后可在知乎草稿箱继续编辑</span>
           </span>
-          <button type="button" className="zh-modal__close" onClick={onClose} aria-label="关闭">
+          <button type="button" className="zh-modal__close" onClick={onClose} disabled={busy} aria-label="关闭">
             ✕
           </button>
         </div>
@@ -607,12 +603,22 @@ export default function ZhihuModal({ open, editor, title, onClose, onRepairImage
                 ? '✅ 助手已连接'
                 : '未连接知乎助手'}
             {assistantUp && (
-              <button type="button" className="zh-zhihu__login" onClick={openLogin}>
+              <button type="button" className="zh-zhihu__login" disabled={busy || !!assistantOperation} onClick={openLogin}>
                 登录知乎 / 检查登录
               </button>
             )}
           </div>
-          {assistantUp === false && (
+          {desktop && <div className="zh-zhihu__row">
+            {!assistantUp && !managedAssistant && <button type="button" className="zh-btn-plain"
+              disabled={busy || !!assistantOperation} onClick={() => void manageAssistant('start')}>
+              {assistantOperation === 'start' ? '正在启动助手…' : '启动知乎助手'}
+            </button>}
+            {managedAssistant && <button type="button" className="zh-btn-plain"
+              disabled={busy || selfChecking || !!assistantOperation} onClick={() => void manageAssistant('stop')}>
+              {assistantOperation === 'stop' ? '正在关闭助手…' : '停止知乎助手'}
+            </button>}
+          </div>}
+          {!desktop && assistantUp === false && (
             <div className="zh-zhihu__msg">
               {/* 不打印绝对路径（又长又带用户名，而且分享版里根本没这个文件）——
                   只说"双击哪个文件"，需要完整路径时点按钮复制到剪贴板 */}
@@ -658,6 +664,7 @@ export default function ZhihuModal({ open, editor, title, onClose, onRepairImage
             <input
               type="text"
               value={addr}
+              readOnly={managedAssistant}
               placeholder={DEFAULT_ADDR}
               onChange={(e) => setAddr(e.target.value)}
               onBlur={save}
@@ -669,6 +676,7 @@ export default function ZhihuModal({ open, editor, title, onClose, onRepairImage
             <input
               type="text"
               value={token}
+              readOnly={managedAssistant}
               placeholder="粘贴助手窗口里显示的令牌（启动时会自动复制到剪贴板）"
               onChange={(e) => setToken(e.target.value)}
               onBlur={() => {
@@ -766,29 +774,31 @@ export default function ZhihuModal({ open, editor, title, onClose, onRepairImage
 
           {phase && (
             <div className="zh-zhihu__phase">
-              ⏳ {phase}（一般十几秒；图片多的时候知乎要多花几秒做托管，请别关窗口）
+              {phase}
             </div>
           )}
 
           {result && (
             <div className={`zh-zhihu__result zh-zhihu__result--${result.ok ? 'ok' : 'bad'}`}>
-              {result.ok ? (
+              {result.saved || result.ok ? (
                 <>
                   <div>
-                    {result.reusedDraft ? '已更新同名草稿' : '已保存新草稿'}「{result.title}」
+                    {result.reusedDraft ? '已更新同名草稿' : '已保存草稿'}「{result.title}」
+                    {!result.ok && '，部分内容未通过核验。'}
                   </div>
-                  <a href={DRAFT_LIST_URL} target="_blank" rel="noopener noreferrer">打开知乎草稿箱</a>
+                  {result.draftUrl && /^https:\/\/zhuanlan\.zhihu\.com\/p\/\d+\/edit$/.test(result.draftUrl)
+                    ? <a href={result.draftUrl} target="_blank" rel="noopener noreferrer">打开这篇知乎草稿</a>
+                    : <a href={DRAFT_LIST_URL} target="_blank" rel="noopener noreferrer">打开知乎草稿箱</a>}
                   <div className="zh-zhihu__dim">
-                    公式 {result.formulasInserted ?? 0} 个
-                    {result.formulasFailed ? `（失败 ${result.formulasFailed} 个）` : ''}
+                    公式 {result.formulasInDraft ?? result.formulasInserted ?? 0} 个
+                    {typeof result.tablesInDraft === 'number' ? ` · 表格 ${result.tablesInDraft} 个` : ''}
                     {typeof result.imagesExpected === 'number' && result.imagesExpected > 0
                       ? ` · 图片 ${result.imagesInDraft ?? 0}/${result.imagesExpected} 张`
                       : ''}
-                    {result.previewText ? ` · 草稿开头：${result.previewText.slice(0, 26)}…` : ''}
                   </div>
                 </>
               ) : (
-                <div>❌ {result.error ?? (result.needLogin ? '知乎没登录，请先点助手窗口里的登录' : '没有成功，请看下面的提示')}</div>
+                <div>{result.error ?? (result.needLogin ? '请先登录知乎，再保存草稿。' : '未能确认草稿已保存。')}</div>
               )}
               {!!result.warnings?.length && (
                 <ul className="zh-zhihu__warn">
@@ -823,7 +833,7 @@ export default function ZhihuModal({ open, editor, title, onClose, onRepairImage
         </div>
 
         <div className="zh-modal__footer">
-          <button type="button" className="zh-btn-plain" onClick={onClose}>
+          <button type="button" className="zh-btn-plain" onClick={onClose} disabled={busy}>
             关闭
           </button>
           <button

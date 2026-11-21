@@ -28,6 +28,7 @@ interface Candidate { path: string[]; file: File }
 
 const videoFile = /\.(mp4|m4v|webm|og[gv]|mov)(?:[?#]|$)/i
 const external = /^(?:[a-z][a-z\d+.-]*:|\/\/)/i
+export const isLocalVideoLink = (path: string) => videoFile.test(path) && !external.test(path)
 const imageType: Record<string, string> = {
   png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp',
   avif: 'image/avif', bmp: 'image/bmp', svg: 'image/svg+xml',

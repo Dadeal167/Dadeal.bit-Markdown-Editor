@@ -5,6 +5,7 @@ const { basename, dirname, join, win32 } = require('node:path')
 const { pathToFileURL } = require('node:url')
 const { setTimeout: delay } = require('node:timers/promises')
 const { findInstalledEngine, sendEngineCommand, engineNames, localFile, exists } = require('./wallpaperEngine.cjs')
+const { startAssistant, stopAssistant } = require('./zhihuAssistant.cjs')
 
 const editorFile = join(__dirname, '..', 'Dadealbit Markdown 编辑器.html')
 const editorUrl = pathToFileURL(editorFile).href
@@ -133,13 +134,13 @@ function fromEditor(frame) {
 
 function handle(channel, fn) {
   ipcMain.handle(channel, (event, ...args) => {
-    if (!fromEditor(event.senderFrame) || closing) throw new Error('仅特效版桌面窗口可管理原生壁纸。')
+    if (!fromEditor(event.senderFrame) || closing) throw new Error('此操作仅在编辑器主窗口中可用。')
     return fn(...args)
   })
 }
 
 async function start() {
-  if (!await exists(editorFile)) throw new Error('请先在项目根目录运行 pnpm build，生成特效版。')
+  if (!await exists(editorFile)) throw new Error('请先在项目根目录运行 pnpm build，生成编辑器 HTML。')
   await restoreProjects()
   editor = new BrowserWindow({
     width: 1280,
@@ -162,6 +163,8 @@ async function start() {
   })
   handle('wallpaper:result', () => result)
   handle('wallpaper:release', (id) => typeof id === 'string' ? closeCapture(id) : undefined)
+  handle('assistant:start', startAssistant)
+  handle('assistant:stop', stopAssistant)
   editor.webContents.session.setDisplayMediaRequestHandler((request, respond) => {
     if (!fromEditor(request.frame) || !request.videoRequested || request.audioRequested || !request.userGesture ||
       requesting || !armed || Date.now() > armed.expires) {
@@ -190,7 +193,7 @@ else {
     if (closing) return
     event.preventDefault()
     closing = true
-    void Promise.allSettled([...captures.keys()].map(closeCapture)).then(() => app.quit())
+    void Promise.allSettled([stopAssistant(), ...[...captures.keys()].map(closeCapture)]).then(() => app.quit())
   })
-  void app.whenReady().then(start).catch((error) => { dialog.showErrorBox('Dadealbit 特效版', message(error)); app.quit() })
+  void app.whenReady().then(start).catch((error) => { dialog.showErrorBox('Dadealbit 桌面编辑器', message(error)); app.quit() })
 }

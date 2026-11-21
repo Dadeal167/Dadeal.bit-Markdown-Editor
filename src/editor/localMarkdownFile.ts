@@ -59,30 +59,6 @@ export function projectImportedImages(md: string, relative: boolean): string {
   })
 }
 
-/** 只读取 Markdown 引用的文件，并将访问限制在已授权的目录之内。 */
-export function assetPath(src: string): string[] | null {
-  try {
-    const path = decodeURIComponent(src.split(/[?#]/)[0]).replace(/\\/g, '/').replace(/^(?:\.\/)+/, '')
-    const parts = path.split('/')
-    return parts.length > 1 && /^assets?$/i.test(parts[0]) &&
-      parts.every((part) => part && part !== '.' && part !== '..' && !part.includes(':')) ? parts : null
-  } catch {
-    return null
-  }
-}
-
-export async function findAssetFile(root: FileSystemDirectoryHandle, src: string): Promise<File | null> {
-  const parts = assetPath(src)
-  if (!parts) return null
-  try {
-    let dir = root
-    for (const name of parts.slice(0, -1)) dir = await dir.getDirectoryHandle(name)
-    return await (await dir.getFileHandle(parts[parts.length - 1])).getFile()
-  } catch {
-    return null
-  }
-}
-
 const encoder = new TextEncoder()
 
 export async function markdownHash(value: string | ArrayBuffer): Promise<string> {

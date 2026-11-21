@@ -1,7 +1,8 @@
 import type { Editor } from '@tiptap/core'
 import { sniffImage } from '../../scripts/imageFormat.mjs'
 import { getMarkdown } from './editorActions'
-import { findAssetFile, writeLocalMarkdown, type LocalFileHandle } from './localMarkdownFile'
+import { writeLocalMarkdown, type LocalFileHandle } from './localMarkdownFile'
+import { resolveProjectAsset, type AssetScope } from './workspace/documentAssets'
 
 function extension(bytes: Uint8Array, mime: string) {
   return sniffImage(bytes)?.ext ?? ({
@@ -21,7 +22,7 @@ export async function storeClipboardAsset(directory: FileSystemDirectoryHandle, 
   return 'assets/' + name
 }
 
-export async function packMarkdownAssets(editor: Editor, title: string, directory?: FileSystemDirectoryHandle) {
+export async function packMarkdownAssets(editor: Editor, title: string, scope?: AssetScope) {
   const tr = editor.state.tr
   const images: { pos: number; attrs: Record<string, unknown> }[] = []
   tr.doc.descendants((node, pos) => { if (node.type.name === 'image') images.push({ pos, attrs: node.attrs }) })
@@ -37,7 +38,7 @@ export async function packMarkdownAssets(editor: Editor, title: string, director
     let path = paths.get(key)
     if (!path) {
       try {
-        const blob = embedded ? await (await fetch(src)).blob() : directory ? await findAssetFile(directory, key) : null
+        const blob = embedded ? await (await fetch(src)).blob() : scope ? await resolveProjectAsset(scope, key) : null
         if (blob) {
           const bytes = new Uint8Array(await blob.arrayBuffer())
           const ext = extension(bytes, blob.type) || extension(bytes, ({ svg: 'image/svg+xml',

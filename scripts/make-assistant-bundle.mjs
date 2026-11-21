@@ -56,11 +56,11 @@ cd /d "%~dp0..\\assistant"
 
 rem --- prefer the node.exe shipped next to this folder (a machine without Node still works) ---
 set "NODE=node"
-if exist "%~dp0..\\..\\runtime\\node.exe" set "NODE=%~dp0..\\..\\runtime\\node.exe"
+if exist "%~dp0..\\runtime\\node.exe" set "NODE=%~dp0..\\runtime\\node.exe"
 
 where node >nul 2>nul
 if not errorlevel 1 goto :haveNode
-if not exist "%~dp0..\\..\\runtime\\node.exe" goto :nonode
+if not exist "%~dp0..\\runtime\\node.exe" goto :nonode
 :haveNode
 if not exist "node_modules\\playwright-core" goto :nodeps
 if not exist "zhihu-assistant.mjs" goto :nofile

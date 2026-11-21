@@ -16,7 +16,8 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } fr
 import { resolve } from 'node:path'
 
 const ROOT = resolve(import.meta.dirname, '..')
-const ZIP = resolve(process.argv[2] ?? resolve(ROOT, '.probe', 'release', 'Dadealbit-Zhihu-Assistant-v1.2.0.zip'))
+const { version } = JSON.parse(readFileSync(resolve(ROOT, 'package.json'), 'utf-8'))
+const ZIP = resolve(process.argv[2] ?? resolve(ROOT, '.probe', 'release', `Dadealbit-Zhihu-Assistant-v${version}.zip`))
 const EXTRACT = resolve(ROOT, '.probe', 'bundle-extract')
 
 const results = []

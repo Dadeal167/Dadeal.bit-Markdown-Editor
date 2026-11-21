@@ -9,5 +9,7 @@ interface Window {
     armWallpaper(id?: string): Promise<void>
     wallpaperResult(): Promise<NativeWallpaperCapture | { error: string } | undefined>
     releaseWallpaper(id: string): Promise<void>
+    startZhihuAssistant(): Promise<{ address: string; token: string; managed: boolean }>
+    stopZhihuAssistant(): Promise<void>
   }
 }

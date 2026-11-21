@@ -36,6 +36,7 @@ import { sniffImage } from './imageFormat.mjs'
 /* ---------- 参数 ---------- */
 const argv = process.argv.slice(2)
 const VISIBLE = argv.includes('--visible')
+const MANAGED = argv.includes('--desktop') && typeof process.send === 'function'
 const portArg = argv.indexOf('--port')
 const PORT = portArg >= 0 ? Number(argv[portArg + 1]) : 5174
 const tokenArg = argv.indexOf('--token')
@@ -71,7 +72,7 @@ const IMAGE_BED_DIR = resolve(STATE_DIR, 'image-bed')
 
 mkdirSync(STATE_DIR, { recursive: true })
 // 令牌落盘一份，方便脚本/编辑器读取（目录在用户主目录下，只有本机用户可读）
-try {
+if (!MANAGED) try {
   writeFileSync(resolve(STATE_DIR, 'token.txt'), TOKEN, { encoding: 'utf-8', mode: 0o600 })
 } catch {
   /* 写不了就算了，控制台里还有 */
@@ -349,7 +350,7 @@ async function runSelfCheck() {
     await pasteHtmlInto(page, probe)
     await page.waitForTimeout(1500)
 
-    /* 图片单独插：走和正式上传同一条路（剪贴板真粘贴）。
+    /* 图片单独插：复用正式上传的图片插入逻辑。
        以前这里是把内嵌 data: 图跟着探针一起粘，实测那条路知乎根本收不下 ——
        于是自检"图片被知乎接管托管"这项**测的不是真实路径**，怎么点都过。 */
     const selfImg = resolve(STATE_DIR, 'tmp', 'selfcheck-probe.png')
@@ -357,15 +358,15 @@ async function runSelfCheck() {
     writeFileSync(selfImg, SELFCHECK_PNG_BUF)
     const selfVia = await insertImageDirect(page, selfImg)
     add(
-      '图片能插进正文（剪贴板真粘贴，和正式上传同一条路）',
+      '图片能插进正文',
       !!selfVia,
-      selfVia ? `走的是${selfVia === 'clipboard' ? '剪贴板粘贴' : selfVia}` : '没能插进去',
+      selfVia ? (selfVia === 'clipboard' ? '剪贴板粘贴' : '知乎图片上传') : '未插入图片',
     )
     await page.waitForTimeout(3000)
 
     // 判据是"刷新后的草稿里有什么"（唯一可信的那条路）
     const read = () =>
-      page.evaluate(() => {
+      page.evaluate((hostPattern) => {
         const root = document.querySelector('.public-DraftEditor-content')
         const imgs = [...(root?.querySelectorAll('img') ?? [])].map((im) => im.getAttribute('src') || '')
         const real = imgs.filter((s) => !/equation\?tex=/.test(s))
@@ -374,10 +375,10 @@ async function runSelfCheck() {
           text: (root?.innerText || '').replace(/\s+/g, ' ').trim(),
           formulas: root ? root.querySelectorAll('[data-tex], .ztext-math, img[eeimg]').length : 0,
           images: real.length,
-          hosted: real.filter((s) => /(zhimg|zhihu)\.com/.test(s)).length,
+          hosted: real.filter((s) => hostPattern.test(s)).length,
           tables: root ? root.querySelectorAll('table').length : 0,
         }
-      })
+      }, hostedImageUrl)
 
     let seen = { title: '', text: '', formulas: 0, images: 0, hosted: 0, tables: 0 }
     for (let i = 0; i < 6; i += 1) {
@@ -388,7 +389,7 @@ async function runSelfCheck() {
         .catch(() => {})
       await page.waitForTimeout(700)
       seen = await read()
-      if (seen.text.includes(SELFCHECK_MARK) && seen.formulas > 0 && seen.images > 0 && seen.tables > 0) break
+      if (seen.text.includes(SELFCHECK_MARK) && seen.formulas > 0 && seen.hosted > 0 && seen.tables > 0) break
     }
     add('正文能粘进去、刷新后还在', seen.text.includes(SELFCHECK_MARK), seen.text ? `读到「${seen.text.slice(0, 26)}…」` : '刷新后正文是空的')
     add('公式变成了知乎的真公式节点', seen.formulas > 0, `数到 ${seen.formulas} 个公式节点`)
@@ -557,13 +558,15 @@ function setClipboardImage(filePath) {
  *  注意：**草稿里的图不一定是 picx.zhimg.com** —— 实测粘贴进去的图是
  *  pic-private 那个域（草稿私有图床），所以判定要用 zhihu 全域，
  *  只认 zhimg 会把成功的图误判成失败。 */
+const hostedImageUrl = /^https?:\/\/(?:[a-z0-9-]+\.)*(?:zhimg|zhihu)\.com(?=[:/?#]|$)/i
+
 function countHostedImages(page) {
-  return page.evaluate(() => {
+  return page.evaluate((hostPattern) => {
     const root = document.querySelector('.public-DraftEditor-content')
     return [...(root?.querySelectorAll('img') ?? [])].filter(
-      (im) => !im.hasAttribute('eeimg') && /(zhimg|zhihu)\.com/.test(im.getAttribute('src') || ''),
+      (im) => !im.hasAttribute('eeimg') && hostPattern.test(im.getAttribute('src') || ''),
     ).length
-  })
+  }, hostedImageUrl)
 }
 
 /** 等到"托管图片数"达到 target，并且**稳住**（每 1 秒看一眼，最多 tries 次）
@@ -593,35 +596,6 @@ async function keepEditorFocus(page) {
   })
 }
 
-/** 触发一次保存并**真的等它存完**（页面右下角状态：保存中 → 已保存/刚刚）。
- *
- *  为什么不能只看状态里有没有「刚刚」：上一次保存留下的"刚刚"会一直在那儿，
- *  一眼看去像是已经存好了，其实这一张图根本没进保存快照 ——
- *  实测表现就是"图插进去了、刷新后草稿里少一张"（甚至 3 张只留 1 张）。 */
-async function nudgeAndWaitSaved(page, timeoutMs = 30000) {
-  try {
-    await keepEditorFocus(page)
-    // 敲一个空格再退格：保证内容真的变了一次（Draft.js 收到真实输入事件），从而触发保存
-    await page.keyboard.type(' ')
-    await page.keyboard.press('Backspace')
-  } catch {
-    /* 敲不进去也没关系，下面照等 */
-  }
-  const t0 = Date.now()
-  let sawSaving = false
-  while (Date.now() - t0 < timeoutMs) {
-    const status = await page
-      .evaluate(() => (document.body.innerText.match(/(已保存|保存中|保存失败|刚刚|\d+ 分钟前)/g) ?? []).join(','))
-      .catch(() => '')
-    if (/保存中/.test(status)) sawSaving = true
-    if (sawSaving && /已保存|刚刚|分钟前/.test(status)) return true
-    // 有的保存太快，看不到「保存中」：给一段固定时间就放行，别死等
-    if (!sawSaving && Date.now() - t0 > 8000) return true
-    await page.waitForTimeout(1000)
-  }
-  return false
-}
-
 /**
  * 路线1：把图片文件**直接喂给知乎自己的上传输入框**（`<input type=file>`）。
  *
@@ -635,19 +609,12 @@ async function nudgeAndWaitSaved(page, timeoutMs = 30000) {
  * GIF 的动画（以及 PNG 透明度、EXIF 之类）一个都不会动。
  */
 async function uploadViaFileInput(page, file, before) {
+  const input = page.locator('input[type="file"][accept^="image/"]').first()
+  if (!(await input.count())) return false
   try {
-    const handles = await page.$$('input[type=file]')
-    for (const h of handles) {
-      const accept = ((await h.getAttribute('accept')) ?? '').toLowerCase()
-      /* 只认真能收图片的输入框（别的可能是"上传附件"，塞进去会变成附件而不是正文里的图） */
-      if (accept && !/image|\.gif|\.png|\.jpe?g|\.webp|\.bmp/.test(accept)) continue
-      await h.setInputFiles(file).catch(() => {})
-      if (await waitHosted(page, before + 1, 30, 5000)) {
-        await nudgeAndWaitSaved(page)
-        return true
-      }
-    }
-    return false
+    await keepEditorFocus(page)
+    await input.setInputFiles(file, { timeout: 5000 })
+    return await waitHosted(page, before + 1, 30, 5000)
   } catch {
     return false
   }
@@ -664,42 +631,18 @@ async function pasteViaClipboard(page, file, before) {
     await keepEditorFocus(page)
     await page.waitForTimeout(400)
     await page.keyboard.press('Control+V')
-    // 等它**传完并稳住**（6 秒内不再变化）再返回，否则后面的操作会把这图挤掉
-    const ok = await waitHosted(page, before + 1, 40, 6000)
-    // 再敲一个回车把这张图"落定"，并**留在原位**（不要跳回正文末尾）
-    if (ok) {
-      await keepEditorFocus(page)
-      await page.keyboard.press('Enter')
-      await page.waitForTimeout(800)
-      // 关键：等知乎把这张图**存到服务器**再走下一步（否则下一张会把它顶掉）
-      await nudgeAndWaitSaved(page)
-    }
-    return ok
+    // 等到私有图床地址出现并稳定，让知乎完成自动保存。
+    return await waitHosted(page, before + 1, 40, 6000)
   } catch {
     return false
   }
 }
 
-/**
- * 插一张图。两条路都试，成功一条就算成。
- *
- * 顺序有讲究（2026-09-27 补）：**动图（GIF）先走"喂文件"**这条路 ——
- * 剪贴板那条路是 Windows 位图，动图会被压成静止的一帧（用户报的正是这个）。
- * 非动图仍按老顺序（剪贴板优先，实测最稳），失败了再退到喂文件。
- *
- * 实测结论（当初为什么只有剪贴板这条路）：
- *   · 跟着 HTML 一起粘（内嵌 data:）→ 知乎前端直接崩一下（控制台报
- *     "Cannot read properties of null (reading 'setAttribute')"），图**根本没进去**
- *   · 点工具栏「图片」按钮等 filechooser → 等不到事件（但 input 本身在 DOM 里，可以直接喂文件）
- *   · 写进系统剪贴板 + 真 Ctrl+V → 图片正常进草稿（草稿私有图床），刷新后还在 ✅
- * 代价：剪贴板那条会占用系统剪贴板，而且需要**有头**浏览器窗口（无头没有系统剪贴板）。
- */
+/** 优先用知乎的正文图片输入框，剪贴板粘贴只作为静态图的备用方式。 */
 async function insertImageDirect(page, file, animated = /\.gif$/i.test(file)) {
   const before = await countHostedImages(page).catch(() => 0)
-  if (animated) return (await uploadViaFileInput(page, file, before)) ? 'file' : null
-  if (await pasteViaClipboard(page, file, before)) return 'clipboard'
-  /* 兜底：剪贴板不可用（无头窗口 / 被占用）时，非动图也走喂文件 */
   if (await uploadViaFileInput(page, file, before)) return 'file'
+  if (!animated && await pasteViaClipboard(page, file, before)) return 'clipboard'
   return null
 }
 
@@ -917,13 +860,12 @@ async function uploadDraft({ title, html }) {
       /* 存不下就算了 */
     }
     await page.goto(WRITE_URL, { waitUntil: 'domcontentloaded', timeout: 60000 })
+    // 先识别登录重定向，避免把登录失效报成编辑区超时。
+    if (!/zhuanlan\.zhihu\.com\/write/.test(page.url())) {
+      return { ok: false, needLogin: true, error: '请先登录知乎，再保存草稿。' }
+    }
     await page.waitForSelector('.public-DraftEditor-content', { timeout: 40000 })
     step('打开写作页')
-
-    // 判断是否登录：未登录会被重定向到登录页
-    if (!/zhuanlan\.zhihu\.com\/write/.test(page.url())) {
-      return { ok: false, needLogin: true, error: '看起来没有登录，请先点「登录知乎」' }
-    }
     // 等标题框出现就够了，别死等固定秒数
     await page.waitForSelector('textarea[placeholder*="标题"], input[placeholder*="标题"]', { timeout: 20000 })
     step('等页面就绪')
@@ -1179,9 +1121,9 @@ async function uploadDraft({ title, html }) {
       }
     }
     if (markersLeft) log(`  收尾：清掉了 ${markersLeft} 处残留的位置标记`)
-    if (queue.length) {
+    if (queue.length && (insertedDirect < queue.length || pastedFallback)) {
       warnings.push(
-        `图片走的是直接插入：${insertedDirect}/${queue.length} 张成功` +
+        `刷新前已插入 ${insertedDirect}/${queue.length} 张图片` +
           (pastedFallback ? `，${pastedFallback} 张没插上（退回旧办法，可能显示「图片导入失败」）` : ''),
       )
     }
@@ -1189,19 +1131,7 @@ async function uploadDraft({ title, html }) {
     // 只等一小会儿让粘贴事件处理完，剩下的交给"刷新后草稿"来判定。
     await page.waitForTimeout(1500)
 
-    /* 最后再"弄脏"一下文档，逼知乎**重新保存一次**。
-       为什么：实测图片插完后 DOM 里都在，但草稿有时只存下 7/8 张 ——
-       说明知乎那次保存发生在某张图还没落定时，之后没有再存。这里敲一个回车（内容变了），
-       让它把"现在这份完整内容"再存一遍。 */
-    if (insertedDirect > 0) {
-      try {
-        await focusBodyEnd(page)
-        await page.keyboard.press('Enter')
-        await page.waitForTimeout(4000)
-      } catch {
-        /* 弄脏失败不影响主流程 */
-      }
-    }
+    if (insertedDirect) log(`  刷新前知乎托管图片 ${await countHostedImages(page).catch(() => 0)} 张`)
     step(`粘贴正文（含公式${insertedDirect ? `；${insertedDirect} 张图直接插入` : ''}）`)
 
     // 公式数量不在这里数：合成粘贴后 React 重渲染慢，DOM 上读不准（实测十几秒还读不到）。
@@ -1228,7 +1158,8 @@ async function uploadDraft({ title, html }) {
 
     // 刷新验证：以"刷新后草稿里有什么"为准（这是唯一可信的判据）。
     // 第一轮先快试一次（多数情况已经存好了），不够再逐轮加长等待。
-    let after = { title: '', text: '', formulas: 0, images: 0, hosted: 0, imageSrcs: [], markersLeft: 0 }
+    const srcTables = (html.match(/<table[\s>]/gi) ?? []).length
+    let after = { title: '', text: '', formulas: 0, images: 0, hosted: 0, tables: 0, markersLeft: 0 }
     const attempts = imagesExpected > 0 ? 6 : 4
     for (let attempt = 0; attempt < attempts; attempt += 1) {
       await page.waitForTimeout(attempt === 0 ? 1200 : 5000 + attempt * 4000)
@@ -1241,7 +1172,7 @@ async function uploadDraft({ title, html }) {
         )
         .catch(() => {})
       await page.waitForTimeout(600)
-      after = await page.evaluate(() => {
+      after = await page.evaluate((hostPattern) => {
         const t = document.querySelector('textarea[placeholder*="标题"]')?.value ?? ''
         const root = document.querySelector('.public-DraftEditor-content')
         const imgs = root ? [...root.querySelectorAll('img')] : []
@@ -1276,8 +1207,8 @@ async function uploadDraft({ title, html }) {
           // ⚠️ 必须写成 (zhimg|zhihu).com —— 实测直接粘进草稿的图是
           // pic-private 那个域（草稿私有图床），只认 picx.zhimg.com 会把成功的图误判成失败。
           // 光数 <img> 也不够：导入失败的图**元素还在**（草稿里显示「图片导入失败，请重新上传」）。
-          hosted: real.filter((im) => /(zhimg|zhihu)\.com/.test(im.getAttribute('src') || '')).length,
-          // 表格过不过得去（贴 HTML 表格时知乎可能不认）—— 只做记录，不参与成功判定
+          hosted: real.filter((im) => hostPattern.test(im.getAttribute('src') || '')).length,
+          // 以重新打开后保留下来的表格为准。
           tables: root ? root.querySelectorAll('table').length : 0,
           // 图片地址（截断存日志，便于事后判断是哪几张出了问题）
           imageSrcs: real.map((im) => (im.getAttribute('src') || '').slice(0, 48)).slice(0, 5),
@@ -1285,19 +1216,21 @@ async function uploadDraft({ title, html }) {
              "喂文件"这条路保住的是原始字节，剪贴板那条路是位图；有网址才能验，不靠猜） */
           hostedUrls: real
             .map((im) => im.getAttribute('src') || '')
-            .filter((s) => /(zhimg|zhihu)\.com/.test(s)),
+            .filter((s) => hostPattern.test(s)),
           // 草稿骨架（段落 / 图片的顺序）—— 判断图片有没有插在原位
           outline,
           // 残留的位置标记数（必须为 0：那是内部占位符，不该出现在用户草稿里）
           markersLeft: ((root?.innerText || '').match(/DADEALBITIMG\d+MARK/g) ?? []).length,
         }
-      })
+      }, hostedImageUrl)
       const okNow =
         after.title === draftTitle &&
         !!after.text &&
         (formulaParts.length === 0 || after.formulas >= formulaParts.length) &&
-        (imagesExpected === 0 || after.images >= imagesExpected) &&
-        after.hosted >= dataExpected
+        after.images === imagesExpected &&
+        after.hosted >= dataExpected &&
+        after.tables >= srcTables &&
+        after.markersLeft === 0
       log(
         `  校验第 ${attempt + 1} 次：标题${after.title === draftTitle ? '✓' : '✗'} 正文${after.text ? '✓' : '✗'} 公式 ${after.formulas}/${formulaParts.length} 图片 ${after.images}/${imagesExpected}（知乎托管 ${after.hosted}/${dataExpected}）`,
       )
@@ -1309,8 +1242,7 @@ async function uploadDraft({ title, html }) {
     /* 表格：源文档有、草稿里没有 → **必须明确告警**。
        以前这里只把数字记进返回值（注释写着"只做记录，不参与成功判定"），
        于是表格被知乎压平的稿子也会显示"上传成功"，用户到知乎里才发现表没了。 */
-    const srcTables = (html.match(/<table[\s>]/gi) ?? []).length
-    if (srcTables > 0 && (after.tables ?? 0) < srcTables) {
+    if (after.tables < srcTables) {
       warnings.push(
         `表格没进去：源文档 ${srcTables} 个、草稿里只数到 ${after.tables ?? 0} 个 —— ` +
           `知乎的编辑器不认这种表格粘贴，到草稿里手动补一下表格（其余内容都在）`,
@@ -1375,6 +1307,7 @@ async function uploadDraft({ title, html }) {
       saved &&
       !!after.text &&
       formulaFailed === 0 &&
+      after.tables >= srcTables &&
       imagesExpected === after.images &&
       imagesUnhosted === 0 &&
       after.markersLeft === 0
@@ -1407,7 +1340,7 @@ async function uploadDraft({ title, html }) {
       backupsDir: resolve(STATE_DIR, 'backups'),
       stepTimings: timings,
       warnings,
-      draftUrl: WRITE_URL,
+      draftUrl: saved ? page.url().match(/^https:\/\/zhuanlan\.zhihu\.com\/p\/\d+\/edit(?=[?#]|$)/)?.[0] : undefined,
     }
   } finally {
     await page.close().catch(() => {})
@@ -1917,6 +1850,10 @@ const server = createServer(async (req, res) => {  cors(req, res)
 })
 
 server.listen(PORT, '127.0.0.1', () => {
+  if (MANAGED) {
+    process.send({ type: 'ready', port: server.address().port, token: TOKEN })
+    return
+  }
   const line = '='.repeat(58)
   console.log(`\n${line}`)
   console.log('  Dadealbit 知乎助手已启动')
@@ -1966,3 +1903,7 @@ const shutdown = async (signal) => {
 process.on('SIGINT', () => shutdown('Ctrl-C'))
 process.on('SIGTERM', () => shutdown('SIGTERM'))
 process.on('SIGHUP', () => shutdown('关闭信号'))
+if (MANAGED) {
+  process.on('message', (command) => { if (command === 'stop') void shutdown('桌面编辑器') })
+  process.on('disconnect', () => { void shutdown('桌面连接关闭') })
+}

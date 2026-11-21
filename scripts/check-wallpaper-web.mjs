@@ -96,7 +96,7 @@ try {
   assert.equal(await page.getByRole('combobox', { name: '背景缩放', exact: true }).inputValue(), 'contain')
   const imageChoice = page.waitForEvent('filechooser')
   await page.getByRole('button', { name: '导入图片或视频', exact: true }).click()
-  await (await imageChoice).setFiles(resolve('.probe/tiny.png'))
+  await (await imageChoice).setFiles(resolve('scripts/fixtures/wallpaper.png'))
   await page.locator('img.zh-fx__lobby-media').waitFor()
   assert.equal(await frame.count(), 0)
   await page.locator('.zh-lobby-history__item').filter({ hasText: 'Live2D 网页验证' }).getByRole('button', { name: /^使用「/ }).click()

@@ -21,7 +21,8 @@ import { insertEditionBlock } from './tiptap/EditionBlock'
 import { readingModeKey } from './tiptap/ReadingMode'
 import WorkspacePanel, { WorkspaceRenameModal } from './workspace/WorkspacePanel'
 import DocumentAssetsModal from './workspace/DocumentAssetsModal'
-import { resolveProjectAsset, type AssetScope } from './workspace/documentAssets'
+import LocalVideoModal from './workspace/LocalVideoModal'
+import { isLocalVideoLink, resolveProjectAsset, type AssetScope } from './workspace/documentAssets'
 import { useDocumentWorkspace } from './workspace/useDocumentWorkspace'
 import type { WorkspaceSearchResult } from './workspace/workspaceSearch'
 import { findMatches, scrollToMatch } from './search'
@@ -52,7 +53,7 @@ import SaveMenu from './publication/SaveMenu'
 import type { SaveFormat } from './publication/saveOptions'
 import { loadLocalMarkdownFiles, storeLocalMarkdownFile } from './docStore'
 import {
-  findAssetFile, localFileMatches, localFilePickers, markdownHash, markdownTypes, projectImportedImages, readLocalMarkdown, serializeLocalMarkdown,
+  localFileMatches, localFilePickers, markdownHash, markdownTypes, projectImportedImages, readLocalMarkdown, serializeLocalMarkdown,
   writeLocalMarkdown, type LocalDirectoryHandle, type LocalFileHandle, type LocalMarkdownFile,
 } from './localMarkdownFile'
 import { exportZhihuMarkdown } from './saveFormats'
@@ -129,6 +130,7 @@ export default function ZhihuEditor() {
   const [diskStatus, setDiskStatus] = useState<{ id: string; file: LocalMarkdownFile; md: string; saved: boolean }>()
   const [markdownInput, setMarkdownInput] = useState(true)
   const [sourceEdit, setSourceEdit] = useState<{ id: string; initial: string } | null>(null)
+  const [localVideo, setLocalVideo] = useState<{ id: string; path: string }>()
   const [assetDocumentId, setAssetDocumentId] = useState<string>()
   const [publication, setPublication] = useState(loadPublicationLayout)
   const [publicationOpen, setPublicationOpen] = useState(false)
@@ -928,7 +930,7 @@ export default function ZhihuEditor() {
     persistDraft(actions.getMarkdown(ed))
     scanIssues()
     const directory = localFiles.get(id)?.directory
-    if (directory) void importFolderImages(id, directory)
+    if (directory) void importFolderImages(id, directory, assetScope)
     return undefined
   }
 
@@ -1090,10 +1092,9 @@ export default function ZhihuEditor() {
 
   const previewSource = useCallback(async (value: string) => {
     const ed = editorRef.current
-    if (!ed) return ''
-    const directory = sourceEdit ? localFiles.get(sourceEdit.id)?.directory : undefined
-    return renderSourcePreview(ed, value, directory ? (src) => findAssetFile(directory, src) : undefined)
-  }, [localFiles, sourceEdit])
+    if (!ed || sourceEdit?.id !== currentIdRef.current) return ''
+    return renderSourcePreview(ed, value, assetScope ? (src) => resolveProjectAsset(assetScope, src) : undefined)
+  }, [assetScope, sourceEdit])
 
   const checkSource = useCallback((value: string) => {
     const linked = sourceEdit ? localFiles.get(sourceEdit.id) : undefined
@@ -1435,11 +1436,11 @@ export default function ZhihuEditor() {
       const canonical = currentMarkdown()
       persistDraft(canonical)
       rememberFile(id, { ...file, source, diskHash, editorHash: await markdownHash(canonical) })
-      if (file.directory) await importFolderImages(id, file.directory)
+      if (file.directory) await importFolderImages(id, file.directory, assetScope)
       setLocalConflict((conflict) => conflict === id ? null : conflict)
       if (currentIdRef.current === id) flash('已重新加载原文件。加载前的草稿已保留在版本历史中。')
     }, '无法读取原文件。可将当前草稿另存为 Markdown 副本。')
-  }, [currentMarkdown, flash, importFolderImages, localFiles, persistDraft, rememberFile, runLocalFileAction, scanIssues, snapshotDocuments, writeStore])
+  }, [assetScope, currentMarkdown, flash, importFolderImages, localFiles, persistDraft, rememberFile, runLocalFileAction, scanIssues, snapshotDocuments, writeStore])
 
   const exportHtmlFile = useCallback(async () => {
     const ed = editorRef.current
@@ -1492,7 +1493,7 @@ export default function ZhihuEditor() {
       if (format === 'zip' && LOCAL_FILE_EDITING) {
         flash('正在打包 Markdown 和图片…')
         try {
-          const { blob, name, missing } = await packMarkdownAssets(ed, titleRef.current, localFiles.get(currentIdRef.current)?.directory)
+          const { blob, name, missing } = await packMarkdownAssets(ed, titleRef.current, assetScope)
           actions.downloadBlob(name, blob)
           flash(missing ? `已导出「${name}」。${missing} 张图片未找到，已保留原链接。` : `已导出「${name}」。`)
         } catch { flash('无法生成 Markdown 资源包。') }
@@ -1524,12 +1525,11 @@ export default function ZhihuEditor() {
         exportingWord.current = true
         const title = titleRef.current.trim()
         const name = (title || '未命名文档') + '.docx'
-        const directory = localFiles.get(currentIdRef.current)?.directory
         flash('正在生成 Word 文档…')
         try {
           const { html, failed } = await exportDiagrams(actions.buildExportBody(ed, 'document', exportContentsTitle()), 'docx')
           const { buildWordDocument } = await import('./publication/exportWord')
-          const result = await buildWordDocument(title, html, directory ? (src) => findAssetFile(directory, src) : undefined, publication)
+          const result = await buildWordDocument(title, html, assetScope ? (src) => resolveProjectAsset(assetScope, src) : undefined, publication)
           actions.downloadBlob(name, result.blob)
           const notices = [
             result.missingImages && `${result.missingImages} 张图片未能嵌入`,
@@ -1559,7 +1559,7 @@ export default function ZhihuEditor() {
         flash('导出出错：' + String(e).slice(0, 120))
       }
     },
-    [exportHtmlFile, exportContentsTitle, flash, localFiles, publication, saveCurrentFile, saveFileCopy, saveMarkdownFile, scheduleSave],
+    [assetScope, exportHtmlFile, exportContentsTitle, flash, publication, saveCurrentFile, saveFileCopy, saveMarkdownFile, scheduleSave],
   )
 
   const reviewExport = useCallback((target: ExportTarget = 'docx') => {
@@ -1573,7 +1573,7 @@ export default function ZhihuEditor() {
       ((format === 'docx' || format === 'pdf' || format === 'zhihu') && hasEditionBlocks(instance.state.doc)))) {
       setEditionRequest({
         doc: instance.state.doc, title: titleRef.current, format: format === 'editions' ? undefined : format,
-        contents: exportContentsTitle() !== undefined, directory: localFiles.get(currentIdRef.current)?.directory,
+        contents: exportContentsTitle() !== undefined, assets: assetScope,
       })
       return
     }
@@ -1585,7 +1585,7 @@ export default function ZhihuEditor() {
       }
     }
     void saveAs(format)
-  }, [exportContentsTitle, localFiles, saveAs])
+  }, [assetScope, exportContentsTitle, saveAs])
 
   const toggleReading = useCallback(() => {
     if (localOperation || (editorRef.current && !editorRef.current.isEditable && !reading)) return
@@ -2037,7 +2037,14 @@ export default function ZhihuEditor() {
             }}
           />
           {includeContents && editor && <PrintContents editor={editor} title={title} />}
-          <div className="zh-editor-body">
+          <div className="zh-editor-body" onClickCapture={(event) => {
+            if (!LOCAL_FILE_EDITING || !(event.target instanceof Element)) return
+            const path = event.target.closest('.ProseMirror a[href]')?.getAttribute('href')
+            if (!path || !isLocalVideoLink(path)) return
+            event.preventDefault()
+            event.stopPropagation()
+            setLocalVideo({ id: currentId, path })
+          }}>
             <EditorContent editor={editor} />
             {LOCAL_FILE_EDITING && editor && <ScholarBibliography editor={editor} />}
           </div>
@@ -2109,6 +2116,8 @@ export default function ZhihuEditor() {
           scanIssues()
           flash(`已修复 ${count} 处素材引用。`)
         }} />}
+      {localVideo?.id === currentId && <LocalVideoModal key={localVideo.id + ':' + localVideo.path}
+        path={localVideo.path} scope={assetScope} onClose={() => setLocalVideo(undefined)} />}
       {renameFile && <WorkspaceRenameModal file={renameFile} files={workspace.files} onCommit={renameWorkspaceFile}
         onClose={() => setRenameFile(undefined)} />}
       {publicationOpen && <PublicationLayoutModal initial={publication} onClose={() => setPublicationOpen(false)} onApply={(layout) => {

@@ -5,7 +5,7 @@ import { chromium } from 'playwright-core'
 import { unzipSync } from 'fflate'
 import { gifInfo, makeAnimatedGif } from './make-test-gif.mjs'
 
-const app = resolve('Dadealbit Markdown 编辑器.html')
+const app = resolve(process.env.DADEALBIT_TEST_HTML ?? 'Dadealbit Markdown 编辑器.html')
 const browser = await chromium.launch({ channel: 'msedge' })
 const url = 'http://127.0.0.1:51739/'
 const animation = makeAnimatedGif()
@@ -182,14 +182,19 @@ try {
   assert.ok(gifInfo(Buffer.from(zip['assets/image-1.gif'])).frames >= 2)
 
   const { modal, input } = await sourceEdit()
+  await disk('共用素材/原始动画.gif', [...animation])
   const source = [
     '# 新讲义', '### 跳级标题', '正文含 $x^2=1$ 和 **加粗**。',
+    '![工作区上级动图](../共用素材/原始动画.gif)',
+    '![未授权路径](../../共用素材/原始动画.gif)',
     '[[/目录#目录]] 与 [缺失](../缺失.md)。', '|A|B|\n|:---:|---:|\n|一|二|',
   ].join('\n\n')
   await input.fill(source)
   const preview = page.frameLocator('iframe[title="Markdown 排版预览"]')
   await preview.locator('math').waitFor()
   await preview.getByText('加粗', { exact: true }).waitFor()
+  await preview.locator('img[alt="工作区上级动图"][src^="data:image/gif"]').evaluate((img) => img.decode())
+  assert.equal(await preview.locator('img[alt="未授权路径"]').getAttribute('src'), null)
   await modal.getByRole('button', { name: '检查格式', exact: true }).click()
   await modal.getByRole('button', { name: /标题层级从 H1 跳至 H3/ }).click()
   assert.equal(await input.evaluate((field) => field.value.slice(field.selectionStart, field.selectionEnd)), '### 跳级标题')
@@ -200,6 +205,10 @@ try {
   await modal.getByRole('button', { name: '将修复应用到源码' }).click()
   assert.match(await input.inputValue(), /\| A \| B \|/)
   await modal.getByRole('button', { name: '应用更改', exact: true }).click()
+  const previewImage = prose.locator('img[alt="工作区上级动图"][src^="data:image/gif"]')
+  const actualGif = await previewImage.evaluate(async (image) => [...new Uint8Array(await (await fetch(image.src)).arrayBuffer())])
+  assert.deepEqual(Buffer.from(actualGif), animation)
+  assert.doesNotMatch(await prose.locator('img[alt="未授权路径"]').getAttribute('src'), /^data:/)
   assert.match(await page.evaluate(() => window.__MD__()), /\| :---: \| ---: \|/)
 
   const layoutEdit = await sourceEdit()
@@ -231,12 +240,13 @@ try {
   assert.match(pdf, /\/MediaBox \[0 0 59[45](?:\.\d+)? 84[12](?:\.\d+)?\]/)
   const assetDoc = '讲义/素材迁移.md'
   const assetSource = [
-    '# 素材测试', '', '![迁移的动图](assets/photo.gif)', '', '[移动的视频](assets/clip.mp4)',
+    '# 素材测试', '', '![迁移的动图](assets/photo.gif)', '', '[移动的视频](assets/clip.webm)',
     '', '![重名素材](assets/ambiguous.gif)', '',
   ].join('\n')
   await disk(assetDoc, assetSource)
   await disk('素材新位置/photo.gif', [...animation])
-  await disk('素材新位置/clip.mp4', [0, 1, 2])
+  const videoBytes = [...await readFile('scripts/fixtures/wallpaper.webm')]
+  await disk('素材新位置/clip.webm', videoBytes)
   await disk('素材新位置/A/ambiguous.gif', [...animation])
   await disk('素材新位置/B/ambiguous.gif', [...animation])
   await workspace.getByRole('button', { name: '刷新', exact: true }).click()
@@ -252,26 +262,37 @@ try {
   await repairs.getByText('→ ../素材新位置/photo.gif', { exact: true }).waitFor()
   await repairs.getByText('存在多个同名文件', { exact: true }).waitFor()
   assert.equal(await disk(assetDoc), assetSource)
-  await disk('素材新位置/clip.mp4', [0, 1, 2, 3])
+  await disk('素材新位置/clip.webm', [0, 1, 2, 3])
   await assets.getByRole('button', { name: '应用修复到正文', exact: true }).click()
   await assets.getByRole('alert').getByText(/素材文件已发生变化/).waitFor()
-  assert.match(await prose.getByRole('link', { name: '移动的视频' }).getAttribute('href'), /^assets\/clip\.mp4$/)
+  assert.match(await prose.getByRole('link', { name: '移动的视频' }).getAttribute('href'), /^assets\/clip\.webm$/)
+  await disk('素材新位置/clip.webm', videoBytes)
   await assets.getByRole('button', { name: '选择新素材文件夹', exact: true }).click()
   await assets.getByRole('button', { name: '应用修复到正文', exact: true }).waitFor()
   await assets.getByRole('button', { name: '应用修复到正文', exact: true }).click()
   await assets.waitFor({ state: 'hidden' })
   const repairedGif = await prose.locator('img[alt="迁移的动图"]').getAttribute('src')
   assert.deepEqual(Buffer.from(repairedGif.split(',')[1], 'base64'), animation)
-  assert.match(await prose.getByRole('link', { name: '移动的视频' }).getAttribute('href'), /^\.\.\/.+\/clip\.mp4$/)
+  const videoLink = prose.getByRole('link', { name: '移动的视频' })
+  assert.match(await videoLink.getAttribute('href'), /^\.\.\/.+\/clip\.webm$/)
   await page.evaluate(() => { window.__EDITOR__.commands.undo() })
-  assert.match(await prose.getByRole('link', { name: '移动的视频' }).getAttribute('href'), /^assets\/clip\.mp4$/)
+  assert.match(await prose.getByRole('link', { name: '移动的视频' }).getAttribute('href'), /^assets\/clip\.webm$/)
   await page.evaluate(() => { window.__EDITOR__.commands.redo() })
   await page.keyboard.press('Control+s')
   await waitSaved()
   const repairedMarkdown = await disk(assetDoc)
   assert.match(repairedMarkdown, /\.\.\/.+\/photo\.gif/)
-  assert.match(repairedMarkdown, /\.\.\/.+\/clip\.mp4/)
+  assert.match(repairedMarkdown, /\.\.\/.+\/clip\.webm/)
   assert.match(repairedMarkdown, /assets\/ambiguous\.gif/)
+  await videoLink.click()
+  const videoDialog = page.getByRole('dialog', { name: '本地视频', exact: true })
+  const properties = await videoDialog.locator('video').evaluate(async (video) => {
+    video.muted = true
+    await video.play()
+    return { width: video.videoWidth, duration: video.duration }
+  })
+  assert.ok(properties.width > 0 && properties.duration > 0)
+  await videoDialog.getByRole('button', { name: '关闭本地视频', exact: true }).click()
   assert.deepEqual(errors, [])
   console.log('工作区跨文档正文与公式检索、命中定位、批量素材修复预览、GIF 和视频链接保留及单次撤销通过。')
   console.log('工作区、反向链接、重命名冲突、原始 GIF、ZIP、源码预览及 Word/PDF 排版通过。')

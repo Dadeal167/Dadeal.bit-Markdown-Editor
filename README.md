@@ -4,9 +4,10 @@
 
 ## 下载与使用
 
-- [下载当前版本 v1.2.0](https://github.com/Dadeal167/Dadeal.bit-Markdown-Editor/releases/latest)。下载 `Dadealbit-Markdown-Editor-v1.2.0.html`，用 Edge 或 Chrome 打开。日常编辑可离线使用。
+- [下载当前版本 v1.2.1](https://github.com/Dadeal167/Dadeal.bit-Markdown-Editor/releases/latest)。下载 `Dadealbit-Markdown-Editor-v1.2.1.html`，用 Edge 或 Chrome 打开。日常编辑可离线使用。
 - 从旧版升级前，用原来的浏览器和 HTML 打开编辑器，把文档导出为 Markdown。浏览器按文件路径隔离本地存储，换文件名、目录或浏览器后可重新导入。
 - 如需「存到知乎草稿箱」，可在同一 Release 下载 Windows 知乎助手包。解压后双击「启动器 → 开始使用.bat」，登录知乎后从编辑器里的「知乎」面板操作。
+- 从源码启动的 Windows 桌面编辑器可在「知乎」面板启动、连接或停止助手，自动填写连接信息。已用外部启动器开启的助手仍由原启动器管理。
 
 ## 写作与工作区
 
@@ -26,7 +27,7 @@
 在「特效 → 背景」导入图片、视频或兼容的 Wallpaper Engine 项目。可调整正文位置、透明度、毛玻璃材质和背景缩放。壁纸历史支持备注、搜索、删除和复用，也可把外观与壁纸绑定到某篇文档。
 
 - 网页内可播放兼容的场景和本地资源完整的 Live2D 项目。部分时段配置可自动匹配，其他项目可导入自己的 `wallpaper-time.json`。场景着色器与项目脚本的兼容性取决于具体壁纸。
-- Windows 用户如已安装 Steam 和 Wallpaper Engine，可以从源码构建后使用「启动器 → Wallpaper Engine 原生模式.bat」。桌面模式使用独立文档库。
+- Windows 用户可以从源码构建后双击「启动器 → 启动桌面编辑器.bat」。桌面模式使用独立文档库。电脑已安装 Wallpaper Engine 时，可以直接从「特效 → 背景」选择原生壁纸。
 - Spine 运行库遵循单独许可。符合许可的开发者可用 `pnpm build:spine` 启用 Spine 4.2 导入，以及兼容角色的视线追踪和摸头。壁纸与游戏素材由使用者自行提供。 [Spine 运行库许可](https://esotericsoftware.com/spine-runtimes-license)
 
 ## 从源码构建

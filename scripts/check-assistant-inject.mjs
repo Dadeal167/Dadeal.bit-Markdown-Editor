@@ -73,7 +73,7 @@ check(
   /export async function extractImageFiles/.test(SRC) && /push-img-/.test(SRC),
 )
 check(
-  '图片走系统剪贴板真粘贴（SetImage + 真 Ctrl+V）——实测唯一能让知乎收下图片的路',
+  '静态图片保留系统剪贴板粘贴作为备用方式',
   /Clipboard\]::SetImage/.test(SRC) && /keyboard\.press\(\s*'Control\+V'/.test(SRC) && /async function pasteViaClipboard/.test(SRC),
 )
 /* 用户报过"图全跑到文末"：根因就是剪贴板粘贴前调了 focusBodyEnd（把光标甩到正文末尾），
@@ -97,26 +97,19 @@ check(
   /const MARK = \(i\)/.test(SRC) &&
     /await pasteHtmlInto\(page, pasteHtml\)/.test(SRC) &&
     /for \(const item of queue\)/.test(SRC) &&
-    /insertImageDirect\(page, item\.file\)/.test(SRC) &&
+    /insertImageDirect\(page, item\.file, item\.animated\)/.test(SRC) &&
     /sel\.addRange\(r\)/.test(SRC),
 )
 check(
   '插图失败要退回旧办法并如实记下来（不能假装成功）',
   /插不进去，退回/.test(SRC) && /pastedFallback \+= 1/.test(SRC),
 )
-/* "DOM 里数到有图了" ≠ "知乎服务器存下了"。
-   不等它就会出现"8 张都插进去了，刷新后草稿里只有 7 张"（实测遇到过好几轮）。 */
 check(
-  '每插一张图都要"触发保存 + 等它真存完"（光看「刚刚」会被上一次保存骗过去）',
-  /async function nudgeAndWaitSaved/.test(SRC) &&
-    /keyboard\.type\(\s*' '\s*\)/.test(SRC) &&
-    /保存中/.test(SRC) &&
-    (() => {
-      const from = SRC.indexOf('async function pasteViaClipboard')
-      const to = SRC.indexOf('async function insertImageDirect')
-      const body = from >= 0 && to > from ? SRC.slice(from, to) : ''
-      return /await nudgeAndWaitSaved\(page\)/.test(body)
-    })(),
+  '插图后等待知乎图床地址稳定，刷新后重新核验图片',
+  /hostedImageUrl = \/\^https\?/.test(SRC) &&
+    /waitHosted\(page, before \+ 1, 30, 5000\)/.test(SRC) &&
+    /waitHosted\(page, before \+ 1, 40, 6000\)/.test(SRC) &&
+    /after\.hosted >= dataExpected/.test(SRC),
 )
 /* 位置标记是内部占位符，绝不该留在用户草稿里（实测出现过残留文字）。
    收尾要清一遍，并且复核里要数残留数。 */

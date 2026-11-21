@@ -5,7 +5,8 @@ import DOMPurify from 'dompurify'
 import { buildExportBody, buildStandaloneHtml, downloadBlob, downloadText, getMarkdown, readFileAsDataUrl } from '../editorActions'
 import { editionBlockLabels, editionDocument, editionLabels, type Edition, type EditionBlockKind, type EditionFormat } from './editions'
 import { checkExport } from './exportPreflight'
-import { findAssetFile, projectImportedImages } from '../localMarkdownFile'
+import { projectImportedImages } from '../localMarkdownFile'
+import { resolveProjectAsset, type AssetScope } from '../workspace/documentAssets'
 import { exportDiagrams } from '../mermaidDiagrams'
 import { printPublicationCss, type PublicationLayout } from './publicationLayout'
 import { exportZhihuMarkdown } from '../saveFormats'
@@ -26,9 +27,9 @@ export function EditionBlockPicker({ onPick, onClose }: { onPick(kind: EditionBl
   </div>
 }
 
-export interface EditionRequest { doc: PMNode; title: string; format?: EditionFormat; contents: boolean; directory?: FileSystemDirectoryHandle }
+export interface EditionRequest { doc: PMNode; title: string; format?: EditionFormat; contents: boolean; assets?: AssetScope }
 
-async function preparePreview(html: string, directory?: FileSystemDirectoryHandle) {
+async function preparePreview(html: string, scope?: AssetScope) {
   const template = document.createElement('template')
   template.innerHTML = DOMPurify.sanitize(html, { FORBID_TAGS: ['iframe', 'form', 'style'], FORBID_ATTR: ['srcset'] })
   const assets = new Map<string, Promise<string | null>>()
@@ -36,7 +37,7 @@ async function preparePreview(html: string, directory?: FileSystemDirectoryHandl
     const src = image.getAttribute('src') ?? ''
     if (!src || /^(?:data:image\/|https?:\/\/|\/\/)/i.test(src)) return
     if (!assets.has(src)) assets.set(src, (async () => {
-      const file = directory && await findAssetFile(directory, src)
+      const file = scope && await resolveProjectAsset(scope, src)
       return file ? readFileAsDataUrl(file).catch(() => null) : null
     })())
     const url = await assets.get(src)
@@ -108,11 +109,11 @@ export default function EditionModal({ editor, request, publication, typography,
   useEffect(() => {
     let current = true
     const html = buildExportBody(editor, 'document', contentsTitle, doc)
-    void preparePreview(html, request.directory).then((result) => {
+    void preparePreview(html, request.assets).then((result) => {
       if (current) setPreview({ doc, body: result.html, failed: result.failed })
     }).catch(() => { if (current) setPreviewFailure(doc) })
     return () => { current = false }
-  }, [contentsTitle, doc, editor, request.directory])
+  }, [contentsTitle, doc, editor, request.assets])
 
   const previewHtml = ready ? buildStandaloneHtml(title, ready.body, typography).replace('<head>', `<head>
     <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data: https: http:">
@@ -134,8 +135,8 @@ export default function EditionModal({ editor, request, publication, typography,
         const { buildWordDocument } = await import('./exportWord')
         const source = buildExportBody(editor, 'document', contentsTitle, doc)
         const { html, failed } = await exportDiagrams(source, 'docx')
-        const directory = request.directory
-        const result = await buildWordDocument(title, html, directory ? (src) => findAssetFile(directory, src) : undefined, publication)
+        const scope = request.assets
+        const result = await buildWordDocument(title, html, scope ? (src) => resolveProjectAsset(scope, src) : undefined, publication)
         downloadBlob(filename + '.docx', result.blob)
         const notes = [result.missingImages && `${result.missingImages} 张图片未嵌入`,
           result.formulaWarnings && `${result.formulaWarnings} 个公式需核对`, failed && `${failed} 个图表保留源码`].filter(Boolean)
