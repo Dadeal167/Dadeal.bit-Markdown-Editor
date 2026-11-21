@@ -30,6 +30,18 @@
 - Windows 用户可以从源码构建后双击「启动器 → 启动桌面编辑器.bat」。桌面模式使用独立文档库。电脑已安装 Wallpaper Engine 时，可以直接从「特效 → 背景」选择原生壁纸。
 - Spine 运行库遵循单独许可。符合许可的开发者可用 `pnpm build:spine` 启用 Spine 4.2 导入，以及兼容角色的视线追踪和摸头。壁纸与游戏素材由使用者自行提供。 [Spine 运行库许可](https://esotericsoftware.com/spine-runtimes-license)
 
+### Spine 动态背景示例
+
+两张截图的背景均为作者从《蔚蓝档案》官方游戏中提取并导入编辑器的 Spine 动画。正文面板放在画面左侧，可调整位置、材质和透明度。
+
+**未花（泳装）**
+
+![未花（泳装）的 Spine 动态背景和左侧半透明正文](docs/screenshots/wallpaper-mika-swimsuit.png)
+
+**未花**
+
+![未花的 Spine 动态背景和左侧半透明正文](docs/screenshots/wallpaper-mika.png)
+
 ## 鼠标效果
 
 在「特效」面板的「鼠标效果」中，可以开关点击效果和拖尾，调整颜色、透明度及拖尾刷新率。拖尾特效来自 [BASpark](https://github.com/DoomVoss/BASpark)。
@@ -60,18 +72,6 @@ pnpm build
 导出前可以设置纸张、页边距、页眉页脚和按章分页。
 
 ![Word 与 PDF 的排版设置](docs/screenshots/publication.png)
-
-### 动态壁纸与毛玻璃
-
-正文面板可以放在画面一侧，并调整位置、毛玻璃材质和透明度。下面两张截图展示了用不同动态壁纸写数学讲义的效果。用过的壁纸可以在历史记录中重新应用。
-
-![未花（泳装）动态壁纸与左侧半透明正文](docs/screenshots/wallpaper-mika-swimsuit.png)
-
-图一的背景是《蔚蓝档案》未花（泳装）的同人动态壁纸。 [Wallpaper Engine 创意工坊 · 未花（泳装）](https://steamcommunity.com/sharedfiles/filedetails/?id=3794407098)
-
-![未花动态壁纸与左侧半透明正文](docs/screenshots/wallpaper-mika.png)
-
-图二的背景是《蔚蓝档案》未花的同人动态壁纸。 [Wallpaper Engine 创意工坊 · 未花](https://steamcommunity.com/sharedfiles/filedetails/?id=3786399807)
 
 ## 许可
 
