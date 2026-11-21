@@ -20,7 +20,7 @@
 
 - 「保存」可导出 Word、PDF、HTML 和 Markdown 资源包。Word 和 PDF 支持纸张、页边距、页眉页脚与分页。
 - 标记提示、答案和解析后，可以从同一份文稿预览并导出学生版和教师版。
-- 「知乎」支持导出供知乎导入的 Markdown，以及通过本机助手保存草稿。视频在知乎稿件中以原始链接保留。实际发布在知乎中完成。
+- 「知乎」可以导出供知乎导入的 Markdown，并直接打开知乎写作页。通过本机助手保存草稿后，编辑器会核对草稿里的公式、表格和图片。视频在知乎稿件中以原始链接保留。
 
 ## 动态壁纸
 
@@ -29,6 +29,12 @@
 - 网页内可播放兼容的场景和本地资源完整的 Live2D 项目。部分时段配置可自动匹配，其他项目可导入自己的 `wallpaper-time.json`。场景着色器与项目脚本的兼容性取决于具体壁纸。
 - Windows 用户可以从源码构建后双击「启动器 → 启动桌面编辑器.bat」。桌面模式使用独立文档库。电脑已安装 Wallpaper Engine 时，可以直接从「特效 → 背景」选择原生壁纸。
 - Spine 运行库遵循单独许可。符合许可的开发者可用 `pnpm build:spine` 启用 Spine 4.2 导入，以及兼容角色的视线追踪和摸头。壁纸与游戏素材由使用者自行提供。 [Spine 运行库许可](https://esotericsoftware.com/spine-runtimes-license)
+
+## 鼠标效果
+
+在「特效」面板的「鼠标效果」中，可以开关点击效果和拖尾，调整颜色、透明度及拖尾刷新率。拖尾特效来自 [BASpark](https://github.com/DoomVoss/BASpark)。
+
+演示中的自定义鼠标指针来自《蔚蓝档案》的游戏素材，素材来源见 [BA-Pointer](https://github.com/Dr-hydra/BA-Pointer)。公开版使用自绘指针。
 
 ## 从源码构建
 
@@ -57,9 +63,15 @@ pnpm build
 
 ### 动态壁纸与毛玻璃
 
-为正文选择材质和透明度，并从历史记录重新应用用过的背景。
+正文面板可以放在画面一侧，并调整位置、毛玻璃材质和透明度。下面两张截图展示了用不同动态壁纸写数学讲义的效果。用过的壁纸可以在历史记录中重新应用。
 
-![月夜背景、毛玻璃正文与壁纸设置](docs/screenshots/wallpaper.png)
+![未花（泳装）动态壁纸与左侧半透明正文](docs/screenshots/wallpaper-mika-swimsuit.png)
+
+图一的背景是《蔚蓝档案》未花（泳装）的同人动态壁纸。 [Wallpaper Engine 创意工坊 · 未花（泳装）](https://steamcommunity.com/sharedfiles/filedetails/?id=3794407098)
+
+![未花动态壁纸与左侧半透明正文](docs/screenshots/wallpaper-mika.png)
+
+图二的背景是《蔚蓝档案》未花的同人动态壁纸。 [Wallpaper Engine 创意工坊 · 未花](https://steamcommunity.com/sharedfiles/filedetails/?id=3786399807)
 
 ## 许可
 
