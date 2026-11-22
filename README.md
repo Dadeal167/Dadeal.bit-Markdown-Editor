@@ -358,4 +358,4 @@ examples/                 示例配置（壁纸分时）
 - **不得用于任何违法活动**，也不得用它帮助他人实施违法活动
 - 按「现状」提供，不附带任何担保
 
-第三方组件遵循各自的许可：WebWallGL、Mediabunny 的许可文本随单文件产物内嵌；Spine 运行库遵循 [Spine Runtimes License](https://esotericsoftware.com/spine-runtimes-license)；界面中的自定义鼠标指针素材来自外部提取资源，**仅限本地自用，不随对外分发的版本提供**。
+第三方组件遵循各自的许可：WebWallGL、Mediabunny 的许可文本随单文件产物内嵌；Spine 运行库遵循 [Spine Runtimes License](https://esotericsoftware.com/spine-runtimes-license)；界面中的自定义鼠标指针使用《蔚蓝档案》的游戏素材。 [BA-Pointer](https://github.com/Dr-hydra/BA-Pointer)

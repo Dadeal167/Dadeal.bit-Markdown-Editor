@@ -41,7 +41,7 @@ export interface MouseEffectSettings {
   clickSpeed: number
   /** 拖尾刷新率（Hz）10–240 */
   trailHz: number
-  /** 自定义鼠标指针（用那枚箭头；只在自用版存在，分享版没有这份素材） */
+  /** 使用《蔚蓝档案》的箭头指针 */
   cursor: boolean
   /** 指针热点（"点哪儿"）：箭头是钝尖，可以自己微调到点得准 */
   cursorHotspot: CursorHotspot

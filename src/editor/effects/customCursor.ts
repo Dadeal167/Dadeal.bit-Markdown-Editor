@@ -1,6 +1,6 @@
 import cursorUrl from './cursor.png'
 
-// Original right-facing cursor. Its 96×80 canvas preserves the existing hotspot coordinates.
+// 《蔚蓝档案》的向右箭头，96×80 的画布保留现有指针热点坐标。
 export interface CursorHotspot {
   x: number
   y: number

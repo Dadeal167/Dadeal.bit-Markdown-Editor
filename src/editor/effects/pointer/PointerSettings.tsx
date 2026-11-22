@@ -261,7 +261,6 @@ export default function PointerSettings({ visible, settings, onChange, onReset }
           </div>
         )}
 
-        {/* 自定义鼠标指针：只在自用版有这份素材（分享版不带） */}
         <div className="zh-fx__toggle">
           <label className="zh-fx__switch">
             <input
@@ -274,7 +273,7 @@ export default function PointerSettings({ visible, settings, onChange, onReset }
           <div>
             <div className="zh-fx__label">自定义鼠标指针</div>
             <div className="zh-fx__hint">
-              换成那枚箭头指针（正文、标题、输入框都换；按钮仍是手型）。这个素材只在自用版里，分享版没有。
+              正文、标题和输入框使用《蔚蓝档案》的箭头指针。按钮使用手型指针。
             </div>
           </div>
         </div>
