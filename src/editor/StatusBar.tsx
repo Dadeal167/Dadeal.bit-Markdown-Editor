@@ -51,6 +51,34 @@ export function fullDateText(d: Date): string {
   return `${d.getFullYear()} 年 ${d.getMonth() + 1} 月 ${d.getDate()} 日 ${WEEKDAYS[d.getDay()]}`
 }
 
+function StatusClock() {
+  const [clock, setClock] = useState(() => new Date())
+  useEffect(() => {
+    let next: number | undefined
+    const sync = () => {
+      window.clearTimeout(next)
+      if (document.hidden) return
+      const timestamp = Date.now()
+      setClock(new Date(timestamp))
+      next = window.setTimeout(sync, 1000 - (timestamp % 1000))
+    }
+    sync()
+    document.addEventListener('visibilitychange', sync)
+    window.addEventListener('focus', sync)
+    return () => {
+      window.clearTimeout(next)
+      document.removeEventListener('visibilitychange', sync)
+      window.removeEventListener('focus', sync)
+    }
+  }, [])
+
+  return (
+    <time className="zh-statusbar__clock" title={fullDateText(clock)} dateTime={clock.toISOString()}>
+      {dateText(clock)} <span className="zh-statusbar__clock-digits">{clockText(clock)}</span>
+    </time>
+  )
+}
+
 export default function StatusBar(props: Props) {
   const { wordCount, markdownInput, savedAt, outlineOpen, saveFailed, localFileName, localFileStatus,
     onToggleMarkdownInput, onExport } = props
@@ -62,13 +90,6 @@ export default function StatusBar(props: Props) {
     return () => window.clearInterval(t)
   }, [])
 
-  /* 「现在时间」要显示到秒，所以得每秒刷一次。这个是独立的 state，
-     跟上面那个 15 秒的计时器分开 —— 别为了一个秒针把用时的重渲染也带成每秒一次。 */
-  const [clock, setClock] = useState(() => new Date())
-  useEffect(() => {
-    const t = window.setInterval(() => setClock(new Date()), 1000)
-    return () => window.clearInterval(t)
-  }, [])
 
   return (
     <div className="zh-statusbar">
@@ -77,9 +98,7 @@ export default function StatusBar(props: Props) {
         <span className="zh-statusbar__count zh-statusbar__elapsed" title="当前会话时长">
           用时：{formatDuration(Math.max(0, now - sessionStartedAt()))}
         </span>
-        <span className="zh-statusbar__clock" title={fullDateText(clock)}>
-          {dateText(clock)} {clockText(clock)}
-        </span>
+        <StatusClock />
 
         <button
           type="button"

@@ -40,7 +40,7 @@ function wallpaperSceneRuntime(): Plugin {
  * 配合 assetsInlineLimit（字体转 data URL）+ iife 打包格式（不能是 ESM），
  * 最终 dist 里只有一个 index.html。
  */
-function singleFilePlugin(spine: boolean): Plugin {
+function singleFilePlugin(spine: boolean, copyToProject: boolean): Plugin {
   return {
     name: 'zhihu-md-single-file',
     apply: 'build',
@@ -48,6 +48,7 @@ function singleFilePlugin(spine: boolean): Plugin {
     // 构建完顺手在项目根目录放一份好认的副本：双击它就打开，
     // 不用进 dist、也不会弹出命令行窗口
     closeBundle() {
+      if (!copyToProject) return
       const root = import.meta.dirname ?? process.cwd()
       const built = resolve(root, 'dist', 'index.html')
       if (!existsSync(built)) return
@@ -94,8 +95,9 @@ export default defineConfig(({ mode }) => {
   // Spine 运行库需在符合其许可时显式启用。
   const singleFile = mode !== 'web'
   const spine = mode === 'spine'
+  const online = mode === 'online'
   return {
-    plugins: [react(), wallpaperSceneRuntime(), ...(singleFile ? [singleFilePlugin(spine)] : [])],
+    plugins: [react(), wallpaperSceneRuntime(), ...(singleFile ? [singleFilePlugin(spine, !online)] : [])],
     resolve: spine ? undefined : {
       alias: [
         { find: /^\.\/spine\/lobbyAssets$/, replacement: resolve(import.meta.dirname, 'src/editor/effects/background/spine/unavailableAssets.ts') },
@@ -115,6 +117,7 @@ export default defineConfig(({ mode }) => {
     server: { port: 5173, strictPort: true, host: '127.0.0.1' },
     build: singleFile
       ? {
+          outDir: online ? 'dist/online' : 'dist',
           // 字体等资源全部转成 data URL，产物里不留外部文件
           assetsInlineLimit: 100 * 1024 * 1024,
           cssCodeSplit: false,

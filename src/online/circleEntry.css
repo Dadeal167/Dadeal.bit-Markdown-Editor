@@ -1,0 +1,39 @@
+.circle-entry {
+  color-scheme: light dark;
+  box-sizing: border-box;
+  width: min(calc(100% - 32px), 660px);
+  max-height: calc(100dvh - 32px);
+  margin: auto;
+  padding: clamp(16px, 4vw, 32px);
+  border: 1px solid color-mix(in srgb, CanvasText 20%, Canvas);
+  border-radius: 16px;
+  background: Canvas;
+  color: CanvasText;
+}
+
+.circle-entry::backdrop { background: rgb(16 24 39 / 54%); }
+.circle-entry__panel h1 { margin: 0 0 8px; font-size: clamp(28px, 5vw, 42px); line-height: 1.2; }
+.circle-entry__panel header p { margin: 0 0 20px; color: GrayText; }
+.circle-entry__panel canvas {
+  display: block;
+  width: 100%;
+  height: clamp(220px, 48dvh, 430px);
+  outline: 1px solid color-mix(in srgb, CanvasText 20%, Canvas);
+  border-radius: 12px;
+  background: color-mix(in srgb, CanvasText 4%, Canvas);
+  cursor: crosshair;
+  touch-action: none;
+}
+.circle-entry__panel footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 12px; }
+.circle-entry__panel footer p { margin: 0; font-variant-numeric: tabular-nums; }
+.circle-entry__actions { display: flex; gap: 8px; }
+.circle-entry__panel footer button {
+  padding: 8px 16px;
+  border: 1px solid color-mix(in srgb, CanvasText 25%, Canvas);
+  border-radius: 8px;
+  background: Canvas;
+  color: CanvasText;
+  font: inherit;
+  cursor: pointer;
+}
+.circle-entry__panel footer button:focus-visible { outline: 2px solid #3984ff; outline-offset: 3px; }

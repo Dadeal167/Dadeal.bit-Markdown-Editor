@@ -17,6 +17,7 @@
     "audit:typography": "node scripts/audit-typography.mjs",
     "audit:zhihu": "node scripts/audit-zhihu.mjs",
     "build": "tsc --noEmit && vite build",
+    "build:online": "tsc --noEmit && vite build --mode online",
     "build:web": "tsc --noEmit && vite build --mode web",
     "check:all": "node scripts/check-all.mjs",
     "check:effects": "node scripts/check-editions-reading.mjs && node scripts/check-toolbar-interface.mjs && node scripts/check-workspace-publication.mjs && node scripts/check-lobby-history.mjs",

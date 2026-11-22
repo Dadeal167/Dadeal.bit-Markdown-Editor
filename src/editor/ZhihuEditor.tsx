@@ -64,6 +64,7 @@ import { mergeDocumentBackup, parseDocumentBackup, serializeDocumentBackup } fro
 import ShortcutModal from './ShortcutModal'
 import TypographyMenu from './TypographyMenu'
 import ZhihuModal from './ZhihuModal'
+import CircleEntry, { circlePassSaved } from '../online/CircleEntry'
 import { applyTypography, loadTypography, saveTypography, type Typography } from './typography'
 import {
   applyPageBackground,
@@ -170,6 +171,7 @@ export default function ZhihuEditor() {
   const [searchOpen, setSearchOpen] = useState(false)
   const [docsOpen, setDocsOpen] = useState(false)
   const [zhihuOpen, setZhihuOpen] = useState(false)
+  const [zhihuUnlocked, setZhihuUnlocked] = useState(() => import.meta.env.MODE !== 'online' || circlePassSaved())
   const [typography, setTypography] = useState<Typography>(() => loadTypography())
   const [pageBackground, setPageBackground] = useState<PageBackground>(() => loadPageBackground())
   const [typographyOpen, setTypographyOpen] = useState(false)
@@ -2250,8 +2252,11 @@ export default function ZhihuEditor() {
         totalMs={totalUsageMs(sessionStartedAt())}
       />
       <ShortcutModal open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
+      {zhihuOpen && !zhihuUnlocked && (
+        <CircleEntry onPass={() => setZhihuUnlocked(true)} onClose={() => setZhihuOpen(false)} />
+      )}
       <ZhihuModal
-        open={zhihuOpen}
+        open={zhihuOpen && zhihuUnlocked}
         editor={editor}
         title={title}
         onClose={() => setZhihuOpen(false)}

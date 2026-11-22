@@ -2208,6 +2208,11 @@ textarea::placeholder {
   letter-spacing: 0.02em;
 }
 
+.zh-statusbar__clock-digits {
+  display: inline-block;
+  min-inline-size: 8ch;
+}
+
 /* 存储写满时的常驻提醒 */
 .zh-statusbar__draft--warn {
   color: #d93025;
