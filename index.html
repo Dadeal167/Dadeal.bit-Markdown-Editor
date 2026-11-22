@@ -7,7 +7,7 @@
 <p role="status" id="status">正在加载 Dadealbit Markdown 编辑器…</p>
 <script type="module">
 try {
-  const files = ["editor-v1.2-a.bin","editor-v1.2-b.bin"]
+  const files = ["editor-v1.2-cursor-a.bin","editor-v1.2-cursor-b.bin"]
   const chunks = await Promise.all(files.map(async file => {
     const res = await fetch(new URL(file, location.href))
     if (!res.ok) throw new Error('下载失败')
@@ -17,7 +17,7 @@ try {
   const bytes = await new Response(stream).arrayBuffer()
   const digest = await crypto.subtle.digest('SHA-256', bytes)
   const hash = [...new Uint8Array(digest)].map(value => value.toString(16).padStart(2,'0')).join('')
-  if (hash !== '4fd29c97e5dcfeb4b3cfbe152b23483b0b0fbcbf133a75bf41546655a16105c1') throw new Error('文件校验失败')
+  if (hash !== 'ca079c6b893a610af86aeca36afd49699ec6bb0d499c9148eed03c22256c441c') throw new Error('文件校验失败')
   const editor = new TextDecoder().decode(bytes)
   document.open()
   document.write(editor)
