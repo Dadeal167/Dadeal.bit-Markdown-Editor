@@ -40,6 +40,9 @@ export interface ToolbarHandlers {
   pickImage(): void
   /** 体检当前文档：图片打不开 / 公式渲染不出来 */
   checkDocument(): void
+  importMarkdownDraft?: () => void
+  importZhihuLink?: () => void
+  openOriginalMarkdown?: () => void
   openDocumentFolder?: () => void
   openWorkspace?: () => void
   openMarkdownSource?: () => void
@@ -70,11 +73,13 @@ export interface ToolbarItem {
   swatch?: string
   onClick?: () => void
   menu?: ToolbarItem[]
+  splitLabel?: string
   active?: boolean
   section?: string
   keywords?: string
   shortcut?: string
   searchable?: boolean
+  showOn?: 'desktop' | 'wide'
 }
 
 
@@ -110,6 +115,8 @@ export function toolbarGroups({ api, handlers, mode, changeMode, revealOrb, rese
     { key: 'ul', label: '无序列表', shortcut: 'bulletList', onClick: () => api.toggleList() },
     { key: 'ol', label: '有序列表', shortcut: 'orderedList', onClick: () => api.toggleOrderedList() },
   ]
+  const headingMenu: ToolbarItem = { key: 'h', label: '标题', icon: <span className="zh-glyph">H</span>, menu: headings }
+  const listMenu: ToolbarItem = { key: 'list', label: '列表', icon: <IconUL />, menu: lists }
   const blockFormats: ToolbarItem[] = [
     { key: 'quote', label: '引用', shortcut: 'quote', keywords: '引用块 blockquote', icon: <IconQuote />, onClick: () => api.toggleQuote() },
     { key: 'code', label: '代码块', shortcut: 'codeBlock', icon: <IconCode />, onClick: () => api.toggleCodeBlock() },
@@ -131,11 +138,21 @@ export function toolbarGroups({ api, handlers, mode, changeMode, revealOrb, rese
   const outline: ToolbarItem = { key: 'outline', label: '大纲', shortcut: 'outline', icon: <IconOutline />, onClick: () => api.toggleOutline() }
   const searchDocument: ToolbarItem = { key: 'search', label: '搜索', icon: <IconSearch />, keywords: '查找 查找替换 搜索正文', onClick: handlers.openSearch }
   const zhihu: ToolbarItem = { key: 'zhihu', label: '知乎', icon: <span className="zh-glyph">知</span>, onClick: handlers.openZhihu }
-  const readingMode = handlers.toggleReadingMode
-    ? [{ key: 'reading-mode', label: '阅读模式', shortcut: 'readingMode', keywords: '只读 沉浸', onClick: handlers.toggleReadingMode }] : []
+  const readingMode: ToolbarItem[] = handlers.toggleReadingMode
+    ? [{ key: 'reading-mode', label: '阅读模式', icon: <span className="zh-glyph" aria-hidden="true">阅</span>,
+      shortcut: 'readingMode', keywords: '只读 沉浸', onClick: handlers.toggleReadingMode }] : []
+  const writingMode: ToolbarItem[] = handlers.toggleWritingFocus
+    ? [{ key: 'writing-focus', label: handlers.writingFocus ? '退出专注模式' : '专注模式', onClick: handlers.toggleWritingFocus }] : []
+  const fullscreen: ToolbarItem = { key: 'fullscreen', label: '全屏', shortcut: 'fullscreen', onClick: () => api.toggleFullscreen() }
   const openMarkdown: ToolbarItem = { key: 'open', label: '打开', icon: <IconOpen />, onClick: () => api.openMarkdownFile() }
+  const openChoices: ToolbarItem[] = [
+    ...(handlers.importMarkdownDraft ? [{ key: 'open-draft', label: '导入为浏览器草稿', onClick: handlers.importMarkdownDraft }] : []),
+    ...(handlers.openOriginalMarkdown ? [{ key: 'open-original', label: '打开原文件（可写回）', onClick: handlers.openOriginalMarkdown }] : []),
+    ...(handlers.openDocumentFolder ? [{ key: 'open-folder', label: '打开文档文件夹', onClick: handlers.openDocumentFolder }] : []),
+    ...(handlers.importZhihuLink ? [{ key: 'open-zhihu-link', label: '从知乎链接导入', keywords: '知乎文章 回答 内容提取 网址', onClick: handlers.importZhihuLink }] : []),
+  ]
   const fileActions: ToolbarItem[] = [
-    openMarkdown,
+    openChoices.length ? { ...openMarkdown, menu: openChoices, splitLabel: '打开方式' } : openMarkdown,
     { key: 'save', label: '保存', render: saveMenu },
   ]
   const undoActions: ToolbarItem[] = [
@@ -146,6 +163,16 @@ export function toolbarGroups({ api, handlers, mode, changeMode, revealOrb, rese
     { key: 'bold', label: '加粗', keywords: '粗体 bold', icon: <span className="zh-glyph zh-glyph--b">B</span>, onClick: () => api.toggleBold() },
     { key: 'italic', label: '斜体', keywords: '倾斜 italic', icon: <span className="zh-glyph zh-glyph--i">I</span>, onClick: () => api.toggleItalic() },
   ]
+  const textFormats = [...inlineFormats, blockFormats[2]]
+  const paragraphFormats = [...headings, ...lists, ...blockFormats.slice(0, 2)]
+  const editMenu: ToolbarItem = {
+    key: 'edit', label: '编辑', icon: <span className="zh-glyph">¶</span>,
+    menu: [
+      ...section('编辑历史', undoActions),
+      ...section('文字格式', textFormats),
+      ...section('段落格式', paragraphFormats),
+    ],
+  }
   const typography: ToolbarItem[] = typographyMenu ? [{ key: 'typography', label: '字体', render: typographyMenu }] : []
   const appearance: ToolbarItem = { key: 'theme', label: '主题', icon: <IconTheme />, menu: theme }
   const toolbarModeItems: ToolbarItem[] = [
@@ -158,7 +185,11 @@ export function toolbarGroups({ api, handlers, mode, changeMode, revealOrb, rese
   ]
   const interfaceMenu: ToolbarItem = {
     key: 'interface', label: '界面', icon: <span className="zh-glyph">◉</span>,
-    menu: [...toolbarModeItems.slice(0, 2), ...readingMode, ...toolbarModeItems.slice(2)],
+    menu: [
+      ...section('文档视图', [outline, ...readingMode, ...writingMode, fullscreen]),
+      ...section('主题', theme),
+      ...section('工具栏', toolbarModeItems),
+    ],
   }
   const more: ToolbarItem = {
     key: 'more', label: __BUILD_MODE__ === 'effect' ? '工具' : '更多', title: '更多', icon: <IconMore />,
@@ -167,10 +198,11 @@ export function toolbarGroups({ api, handlers, mode, changeMode, revealOrb, rese
       ...section('文档与工作区', [
         ...(__BUILD_MODE__ === 'effect' ? [{ key: 'new-doc', label: '新建文档', shortcut: 'newDoc', onClick: () => shortcuts.run('newDoc') }] : []),
         ...(__BUILD_MODE__ === 'effect' ? [{ ...openMarkdown, label: '打开 Markdown 文件', keywords: '导入 本地文档' }] : []),
-        ...(handlers.openDocumentFolder ? [{ key: 'open-folder', label: '打开文档文件夹', onClick: handlers.openDocumentFolder }] : []),
+        ...openChoices.filter((item) => item.key !== 'open-draft'),
         ...(handlers.openWorkspace ? [{ key: 'open-workspace', label: '本地工作区', keywords: '反向链接 文件树', onClick: handlers.openWorkspace }] : []),
         ...(handlers.openMarkdownSource ? [{ key: 'markdown-source', label: '编辑 Markdown 源码', keywords: '原文 校对 source', onClick: handlers.openMarkdownSource }] : []),
       ]),
+      ...(__BUILD_MODE__ === 'effect' ? section('编辑与插入', [...undoActions, ...textFormats, ...paragraphFormats, ...insert]) : []),
       ...section('写作与学术', [
         ...(handlers.markEditionBlock ? [{ key: 'edition-block', label: '标记提示、答案或解析', keywords: '分版 学生版 试题', onClick: handlers.markEditionBlock }] : []),
         ...(handlers.openEquationTools ? [{ key: 'equation-tools', label: '公式编号与引用', keywords: '交叉引用 编号 标签', onClick: handlers.openEquationTools }] : []),
@@ -190,7 +222,7 @@ export function toolbarGroups({ api, handlers, mode, changeMode, revealOrb, rese
         })),
       ]) : []),
       ...section('检查与诊断', [
-        ...(handlers.openAssetManager ? [{ key: 'asset-manager', label: '素材管理与断链修复', keywords: '本地图片 GIF 视频 重连', onClick: handlers.openAssetManager }] : []),
+        ...(handlers.openAssetManager ? [{ key: 'asset-manager', label: '素材管理与断链修复', keywords: '本地图片 GIF 视频 重连 保存远程素材 离线 网络图片', onClick: handlers.openAssetManager }] : []),
         ...(handlers.openExportPreflight ? [{ key: 'export-preflight', label: '导出前检查', keywords: '预检 审校', onClick: handlers.openExportPreflight }] : []),
         { key: 'check-doc', label: '检查图片与公式（自动修复公式）', keywords: '公式修复 文档体检', onClick: handlers.checkDocument },
         { key: 'math-diag', label: '导出公式诊断', onClick: handlers.exportMathDiag },
@@ -203,12 +235,11 @@ export function toolbarGroups({ api, handlers, mode, changeMode, revealOrb, rese
           ...theme.map((item) => ({ ...item, label: item.label + '主题' })),
           ...toolbarModeItems,
         ] : []),
-        ...(handlers.toggleWritingFocus ? [{ key: 'writing-focus', label: handlers.writingFocus ? '退出专注模式' : '专注模式', onClick: handlers.toggleWritingFocus }] : []),
-        { key: 'fullscreen', label: '全屏', shortcut: 'fullscreen', onClick: () => api.toggleFullscreen() },
+        ...writingMode,
+        fullscreen,
         { key: 'help', label: '快捷键帮助', onClick: handlers.openHelp },
         { key: 'shortcuts', label: '自定义快捷键', shortcut: 'shortcuts', onClick: handlers.openShortcuts },
       ]),
-      ...(__BUILD_MODE__ === 'effect' ? section('格式与插入', [...headings, ...inlineFormats, ...lists, ...blockFormats, ...insert]) : []),
       ...section('帮助与维护', [
         { key: 'feedback', label: '使用反馈（发邮件给作者）', onClick: handlers.openFeedback },
         { key: 'reset-doc', label: '重置当前文档为示例内容', onClick: () => api.resetCurrentDoc() },
@@ -217,20 +248,28 @@ export function toolbarGroups({ api, handlers, mode, changeMode, revealOrb, rese
   }
   const effects: ToolbarItem[] = __NO_MOUSE_EFFECT__ || !effectPanel ? []
     : [{ key: 'effect', label: '特效', icon: <IconSpark />, render: effectPanel }]
+  const topBar = (showOn: NonNullable<ToolbarItem['showOn']>, ...items: ToolbarItem[]) =>
+    mode === 'bar' ? items.map((item) => ({ ...item, showOn })) : []
   const compactGroups: ToolbarItem[][] = [
     fileActions,
-    [...undoActions, ...inlineFormats,
-      { key: 'format', label: '格式', icon: <span className="zh-glyph">¶</span>, menu: [...headings, ...lists, ...blockFormats] },
-      ...typography],
-    [...insert.slice(0, 2), { key: 'insert', label: '插入', icon: <span className="zh-glyph">＋</span>, menu: insert.slice(2) }],
-    [outline, searchDocument, zhihu],
-    [appearance, ...effects, interfaceMenu, more],
+    [
+      ...topBar('desktop', ...undoActions),
+      editMenu, ...topBar('wide', headingMenu),
+      ...topBar('desktop', ...inlineFormats), ...typography,
+      ...topBar('wide', listMenu, ...blockFormats.slice(0, 2)),
+    ],
+    [
+      ...insert.slice(0, 2), ...topBar('desktop', insert[2]), ...topBar('wide', insert[3], insert[4]),
+      { key: 'insert', label: '插入', icon: <span className="zh-glyph">＋</span>, menu: insert.slice(2) },
+    ],
+    [searchDocument, ...topBar('desktop', outline), ...topBar('wide', ...readingMode), zhihu],
+    [...effects, interfaceMenu, more],
   ]
   const pureGroups: ToolbarItem[][] = [
     fileActions,
     [...undoActions, blockFormats[2]],
-    [{ key: 'h', label: '标题', icon: <span className="zh-glyph">H</span>, menu: headings }, ...inlineFormats, ...typography],
-    [{ key: 'list', label: '列表', icon: <IconUL />, menu: lists }, blockFormats[0], insert[5], blockFormats[1]],
+    [headingMenu, ...inlineFormats, ...typography],
+    [listMenu, blockFormats[0], insert[5], blockFormats[1]],
     [insert[0], insert[4], insert[3], insert[1], insert[2]],
     [outline, searchDocument, appearance, ...effects, zhihu, more],
   ]

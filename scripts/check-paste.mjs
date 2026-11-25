@@ -152,7 +152,7 @@ const stats = (page) =>
     `公式 ${afterFix.math} 个，残留 $ ${afterFix.dollars}`,
   )
   const barText = await page.evaluate(() => document.querySelector('.zh-fixbar')?.textContent?.trim() ?? '')
-  check('C 修完会报出"把几处原文公式变成了真公式"', /原文公式/.test(barText), barText.replace(/\s+/g, ' ').slice(0, 70))
+  check('C 修完会报告转换的公式数量', /已将\s*3\s*处文本转换为公式/.test(barText), barText.replace(/\s+/g, ' ').slice(0, 70))
   const latex = await page.evaluate(() =>
     [...document.querySelectorAll('.math-node')].map((n) => n.getAttribute('data-latex')),
   )

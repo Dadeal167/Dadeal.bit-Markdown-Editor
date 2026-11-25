@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { IconSearch } from '../icons'
 import { displayKey, shortcuts } from '../shortcuts'
 import { useAnchoredMenu } from '../useAnchoredMenu'
@@ -9,7 +9,9 @@ export default function ToolbarButton({ item, open, onOpenChange, afterClick }: 
 }) {
   const ref = useRef<HTMLDivElement>(null)
   const menu = useRef<HTMLDivElement>(null)
+  const splitButton = useRef<HTMLButtonElement>(null)
   const search = useRef<HTMLInputElement>(null)
+  const menuId = useId()
   const [query, setQuery] = useState('')
   const [current, setCurrent] = useState(0)
   const queryWords = query.normalize('NFKC').trim().toLowerCase().split(/\s+/).filter(Boolean)
@@ -35,7 +37,10 @@ export default function ToolbarButton({ item, open, onOpenChange, afterClick }: 
     }
     const esc = (e: KeyboardEvent) => {
       if (e.key !== 'Escape' || e.isComposing) return
-      if (item.searchable && ref.current?.contains(document.activeElement)) afterClick()
+      if (ref.current?.contains(document.activeElement)) {
+        if (item.searchable) afterClick()
+        else splitButton.current?.focus({ preventScroll: true })
+      }
       onOpenChange(false)
     }
     document.addEventListener('pointerdown', close)
@@ -49,20 +54,20 @@ export default function ToolbarButton({ item, open, onOpenChange, afterClick }: 
   const run = (command: ToolbarItem) => {
     onOpenChange(false)
     command.onClick?.()
-    afterClick()
+    if (!item.splitLabel) afterClick()
   }
 
   return (
-    <div className="zh-tb-wrap" ref={ref}>
+    <div className={item.splitLabel ? 'zh-tb-wrap zh-tb-wrap--split' : 'zh-tb-wrap'} ref={ref} data-toolbar-show-on={item.showOn}>
       <button
         type="button"
         className={`zh-btn${item.active ? ' zh-btn--active' : ''}`}
         title={item.title ?? item.label}
-        aria-expanded={item.menu ? open : undefined}
+        aria-expanded={item.menu && !item.splitLabel ? open : undefined}
         // 阻止 mousedown 默认行为：保持编辑器焦点与选区不被抢走
         onMouseDown={(e) => e.preventDefault()}
         onClick={() => {
-          if (item.menu) {
+          if (item.menu && !item.splitLabel) {
             onOpenChange(!open)
           } else {
             run(item)
@@ -72,8 +77,13 @@ export default function ToolbarButton({ item, open, onOpenChange, afterClick }: 
         {item.icon}
         <span className="zh-btn__label">{item.label}</span>
       </button>
+      {item.splitLabel && <button type="button" className="zh-open-choices" ref={splitButton}
+        title={item.splitLabel} aria-label={item.splitLabel} aria-expanded={open} aria-controls={open ? menuId : undefined}
+        onMouseDown={(event) => event.preventDefault()} onClick={() => onOpenChange(!open)}>
+        <span aria-hidden="true" />
+      </button>}
       {item.menu && open && (
-        <div ref={menu} className={`zh-menu${item.menu.some((entry) => entry.section) ? ' zh-menu--organized' : ''}`}>
+        <div id={menuId} ref={menu} className={`zh-menu${item.searchable ? ' zh-menu--organized' : ''}`}>
           {item.searchable && <div className="zh-command-search">
             <IconSearch />
             <input ref={search} type="search" aria-label="搜索功能" aria-description="方向键选择，Enter 执行，Esc 关闭"

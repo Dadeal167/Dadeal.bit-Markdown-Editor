@@ -7,6 +7,7 @@ interface Props {
   saveFailed?: boolean
   localFileName?: string
   localFileStatus?: string
+  fileModeReady?: boolean
   onToggleMarkdownInput(): void
   /** 点「保存 .md」：这是打开"选格式"菜单的入口（按钮文字不变） */
   onExport(format: SaveFormat): void
@@ -16,6 +17,7 @@ import SaveMenu from './publication/SaveMenu'
 import type { SaveFormat } from './publication/saveOptions'
 import { useEffect, useState } from 'react'
 import { formatDuration, sessionStartedAt } from './usageTime'
+import { displayKey, shortcuts } from './shortcuts'
 
 function relTime(at: number): string {
   const s = Math.max(1, Math.floor((Date.now() - at) / 1000))
@@ -80,7 +82,7 @@ function StatusClock() {
 }
 
 export default function StatusBar(props: Props) {
-  const { wordCount, markdownInput, savedAt, outlineOpen, saveFailed, localFileName, localFileStatus,
+  const { wordCount, markdownInput, savedAt, outlineOpen, saveFailed, localFileName, localFileStatus, fileModeReady,
     onToggleMarkdownInput, onExport } = props
   /* 左下角「用时」：本次打开用了多久。15 秒刷一次就够（显示到分钟），
      不用每秒重渲染 —— 对这个数字没意义。 */
@@ -90,6 +92,8 @@ export default function StatusBar(props: Props) {
     return () => window.clearInterval(t)
   }, [])
 
+  const saveKey = __BUILD_MODE__ === 'effect' ? shortcuts.bindings().save : null
+  const saveAction = saveKey ? `按 ${displayKey(saveKey)} ` : '保存时'
 
   return (
     <div className="zh-statusbar">
@@ -126,6 +130,10 @@ export default function StatusBar(props: Props) {
         ) : (
           savedAt !== null && <span className="zh-statusbar__draft" title={relTime(savedAt)}>草稿已自动保存</span>
         )}
+        {__BUILD_MODE__ === 'effect' && <span className="zh-statusbar__mode"
+          title={localFileName ? `${saveAction}写回原文件「${localFileName}」` : `草稿保存在浏览器中。${saveAction}下载 Markdown 文件。`}>
+          {localFileName ? '已关联原文件' : fileModeReady ? '浏览器草稿' : '正在读取文件关联'}
+        </span>}
         {localFileName && <span className="zh-statusbar__draft zh-statusbar__file" title={localFileName} role="status">{localFileStatus}</span>}
         {outlineOpen && <span className="zh-statusbar__draft">大纲已展开</span>}
         <span className="zh-statusbar__spacer" />

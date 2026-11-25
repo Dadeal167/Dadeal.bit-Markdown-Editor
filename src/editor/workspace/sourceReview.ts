@@ -8,18 +8,22 @@ import { protectMathSpans, recoverEscapedMath } from '../tiptap/mathMarkdown'
 import { escapeMarkdownDestinations } from '../tiptap/mdDestinations'
 import { parseWikiLink } from '../tiptap/WikiLink'
 import { looksLikeFormula } from '../zhihuMarkdown'
+import { markdownFrontMatter } from '../markdownFrontMatter'
+import { projectPortableBlocks } from '../tiptap/portableMarkdown'
 
 type AssetResolver = (src: string) => Promise<Blob | null>
 export type SourceLinkCheck = (destination: string, wiki: boolean) => Promise<string | undefined>
 export interface SourceIssue { line: number; text: string }
 
 export async function renderSourcePreview(editor: Editor, source: string, resolveAsset?: AssetResolver) {
+  source = source.slice(markdownFrontMatter(source).length)
   const { markdown } = editor.storage as unknown as { markdown?: { parser: { parse(content: string): string } } }
   const macros = markdownMacros(source)
   const protectedSource = protectMathSpans(recoverEscapedMath(source, looksLikeFormula), macros)
   const raw = markdown?.parser.parse(escapeMarkdownDestinations(protectedSource.md)) ?? ''
   const tpl = document.createElement('template')
   tpl.innerHTML = DOMPurify.sanitize(raw, { FORBID_TAGS: ['style', 'iframe', 'form'], FORBID_ATTR: ['style', 'srcset', 'target'] })
+  projectPortableBlocks(tpl.content)
   for (const math of tpl.content.querySelectorAll('[data-math-inline],[data-math-block]')) {
     math.innerHTML = DOMPurify.sanitize(renderMathml(math.getAttribute('data-latex') ?? '', math.hasAttribute('data-math-block'), macros))
   }
@@ -81,8 +85,10 @@ export async function reviewSource(source: string, checkLink: SourceLinkCheck) {
   const lines = source.split('\n')
   const formatted = [...lines]
   const issues: SourceIssue[] = []
-  const tokens = workspaceMarkdown.parse(escapeMarkdownDestinations(source), {})
-  const headings = workspaceHeadings(source)
+  const header = markdownFrontMatter(source)
+  const body = header.replace(/[^\r\n]/g, '') + source.slice(header.length)
+  const tokens = workspaceMarkdown.parse(escapeMarkdownDestinations(body), {})
+  const headings = workspaceHeadings(body)
   let previous = 0
   for (const heading of headings) {
     if (heading.level > previous + 1) issues.push({ line: heading.line,

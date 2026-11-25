@@ -24,15 +24,17 @@ import { ObjectNumbering, ObjectReference, objectReferenceText } from './tiptap/
 import type { Node as PMNode, Slice } from '@tiptap/pm/model'
 import type { EditorView } from '@tiptap/pm/view'
 import { convertRawMath, escapeNonMathDollars } from './math/rawMathText'
-import { protectMathSpans, recoverEscapedMath, stripLeakedMarks } from './tiptap/mathMarkdown'
+import { normalizePastedMathHtml, protectMathSpans, recoverEscapedMath, stripLeakedMarks } from './tiptap/mathMarkdown'
 import { repairLatex } from './math/latexRepair'
 import { documentMacros, markdownMacros, MACRO_LANGUAGE } from './math/documentMacros'
 import { looksLikeFormula, stripExporterHeader } from './zhihuMarkdown'
 import { CaptionedTableView, MarkdownTable } from './tiptap/tableMarkdown'
 import { MAX_IMAGE_FILE, getMarkdown, prepareImageDataUrl, setMarkdown } from './editorActions'
+import { clipboardGifLink, clipboardGifSource, restoreClipboardGifSources } from './imageClipboard'
 import { WikiLink } from './tiptap/WikiLink'
 import { EditionBlock } from './tiptap/EditionBlock'
 import { ReadingMode } from './tiptap/ReadingMode'
+import { FrontMatter, GithubAlert, StarterKitWithTasks } from './tiptap/portableMarkdown'
 
 interface MarkdownStorage {
   parser?: { parse: (content: string, options?: { inline?: boolean }) => string }
@@ -228,7 +230,7 @@ export function useMarkdownEditor({ initialMarkdown, markdownInput, onUpdate, on
 
   const editor = useEditor({
     extensions: [
-      StarterKit.configure({
+      (__BUILD_MODE__ === 'effect' ? StarterKitWithTasks : StarterKit).configure({
         codeBlock: false,
         heading: { levels: __BUILD_MODE__ === 'effect' ? [1, 2, 3, 4, 5, 6] : [1, 2, 3] },
         // 链接要能直接点开（用户反馈"输出的网址点不动"）；
@@ -262,7 +264,7 @@ export function useMarkdownEditor({ initialMarkdown, markdownInput, onUpdate, on
       // 搜索高亮：也是 decoration，搜完不会在文档里留下任何痕迹
       SearchHighlight,
       ...(__BUILD_MODE__ === 'effect' ? [WritingFocus, EquationNumbering, ObjectNumbering, ObjectReference, ChapterManagement,
-        ScholarReference, FootnoteDefinition, MathStatement, WikiLink, EditionBlock, ReadingMode] : []),
+        ScholarReference, FootnoteDefinition, MathStatement, WikiLink, EditionBlock, ReadingMode, FrontMatter, GithubAlert] : []),
     ],
     // ⚠️ 初始内容**不能**交给 content: 直接解析 —— 那会绕过公式保护，
     //    $…$ 里的 \{ \} \% \# 会被 Markdown 的转义规则吃掉（实测：$\left \{ x \right \}$
@@ -295,20 +297,44 @@ export function useMarkdownEditor({ initialMarkdown, markdownInput, onUpdate, on
        * 公式仍是带 data-latex 的真节点，粘回本编辑器不会退化成源码。
        */
       clipboardTextSerializer,
-      handlePaste(_view, event) {
+      ...(__BUILD_MODE__ === 'effect' ? {
+        transformPastedHTML(html: string, view: EditorView) {
+          return restoreClipboardGifSources(normalizePastedMathHtml(html, () => documentMacros(view.state.doc).macros))
+        },
+      } : {}),
+      handlePaste(_view, event, slice) {
+        const html = event.clipboardData?.getData('text/html') ?? ''
+        const text = event.clipboardData?.getData('text/plain') ?? ''
         const files = Array.from(event.clipboardData?.files ?? []).filter((f) =>
           f.type.startsWith('image/'),
         )
-        if (files.length > 0) {
+        const instance = editorRef.current
+        if (!instance) return false
+
+        // Windows can supply a static preview alongside the page's original GIF.
+        let hasRichContent = false
+        if (__BUILD_MODE__ === 'effect' && files.length && html) {
+          hasRichContent = Boolean(slice.content.textBetween(0, slice.content.size, '', (node) =>
+            node.type.name === 'mathInline' || node.type.name === 'mathBlock' ? '$' : '',
+          ).trim())
+          if (!hasRichContent && !(files.length === 1 && files[0].type === 'image/gif')) {
+            slice.content.descendants((node) => {
+              if (node.type.name === 'image' && clipboardGifSource(node.attrs.src)) hasRichContent = true
+            })
+          }
+        }
+        if (files.length > 0 && !hasRichContent) {
+          if (__BUILD_MODE__ === 'effect' && files.length === 1 && files[0].type !== 'image/gif') {
+            const src = clipboardGifLink(event.clipboardData, text)
+            if (src && instance.commands.setImage({ src })) {
+              event.preventDefault()
+              return true
+            }
+          }
           event.preventDefault()
           void insertImageFiles(files)
           return true
         }
-
-        const html = event.clipboardData?.getData('text/html') ?? ''
-        const text = event.clipboardData?.getData('text/plain') ?? ''
-        const instance = editorRef.current
-        if (!instance) return false
 
         /* ---- 1) 纯文本粘贴（从记事本 / 别的编辑器复制 Markdown 源码）----
            默认那条路会把 `$a_1$` 解析成 `$a<em>1</em>$`，公式碎成一堆原文。

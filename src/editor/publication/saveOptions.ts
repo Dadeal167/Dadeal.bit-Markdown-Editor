@@ -14,7 +14,7 @@ const SAVE_FORMATS: SaveFormatItem[] = [
     { key: 'docx' as const, label: '导出 Word（.docx）', hint: '导出可在 Word 中继续编辑的文档。' },
     { key: 'publication' as const, label: 'Word 与 PDF 排版', hint: '选择讲义、试题解析模板或自定义页面。' },
     { key: 'editions' as const, label: '一稿多版', hint: '预览并导出学生版、教师版或知乎版。' },
-    { key: 'zip' as const, label: '导出 Markdown 与图片（.zip）', hint: '将 Markdown 文档与本地图片打包，保留动图。' },
+    { key: 'zip' as const, label: '导出 Markdown 与图片（.zip）', hint: '打包文档和本地图片，保留动图，并列出仍需联网的图片。' },
   ] : []),
   {
     key: 'plain',

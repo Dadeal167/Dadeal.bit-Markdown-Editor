@@ -74,7 +74,7 @@ record(
 /* ---------- 3. 表格：单元格文字能否存进 .md ---------- */
 await page.evaluate(() => window.__EDITOR__.commands.focus('end'))
 await page.getByTitle('插入', { exact: true }).click()
-await page.getByRole('button', { name: '表格', exact: true }).click()
+await page.locator('.zh-toolbar .zh-menu').getByRole('button', { name: '表格', exact: true }).click()
 await page.waitForSelector('.zh-modal--table', { timeout: 5000 })
 await page.locator('.zh-modal--table input[aria-label="输入表格行数"]').fill('2')
 await page.locator('.zh-modal--table input[aria-label="输入表格列数"]').fill('2')
@@ -116,11 +116,12 @@ record('表格单元格里插公式不崩', stillAlive, `编辑器 ${stillAlive 
 /* ---------- 6. 大纲点击跳转 ---------- */
 await page.evaluate(() => window.__EDITOR__.commands.focus('end'))
 await page.keyboard.press('Enter')
-await page.getByTitle('格式', { exact: true }).click()
+await page.getByTitle('编辑', { exact: true }).click()
 await page.getByRole('button', { name: '二级标题' }).click()
 await page.keyboard.type('跳转目标标题')
 await page.waitForTimeout(400)
-await page.locator('.zh-btn[title="大纲"]').click()
+await page.getByTitle('界面', { exact: true }).click()
+await page.getByRole('group', { name: '文档视图', exact: true }).getByRole('button', { name: '大纲', exact: true }).click()
 await page.waitForSelector('.zh-outline', { timeout: 5000 })
 const jumpItem = page.locator('.zh-outline__item', { hasText: '跳转目标标题' })
 const hasItem = (await jumpItem.count()) > 0
@@ -182,7 +183,7 @@ await page.evaluate(() => {
   ed.commands.focus('end')
 })
 await page.getByTitle('插入', { exact: true }).click()
-await page.getByRole('button', { name: '表格', exact: true }).click()
+await page.locator('.zh-toolbar .zh-menu').getByRole('button', { name: '表格', exact: true }).click()
 await page.waitForSelector('.zh-modal--table', { timeout: 5000 })
 await page.getByRole('button', { name: '插入', exact: true }).click()
 await page.waitForTimeout(500)

@@ -41,6 +41,84 @@ function mathElement(latex: string, display: boolean, macros: MathMacros): HTMLE
   return el
 }
 
+function zhihuEquationSource(img: Element): string {
+  const marked = img.matches('.ee_img, .eeimg, [eeimg="1"], [eeimg="2"]')
+  const src = img.getAttribute('src') ?? ''
+  let tex = ''
+  if (src.includes('equation?')) {
+    try {
+      const url = new URL(src, 'https://www.zhihu.com/')
+      if (/^https?:$/.test(url.protocol) && /^(?:www\.)?zhihu\.com$/.test(url.hostname) &&
+          url.pathname === '/equation') {
+        tex = /[?&]tex=([^&]*)/.exec(url.search)?.[1] ?? ''
+        tex = decodeURIComponent(tex)
+      }
+    } catch { /* An invalid image URL may still have a marked LaTeX alt. */ }
+  }
+  return marked || tex ? (img.getAttribute('alt')?.trim() || tex.trim()) : ''
+}
+
+function isOnlyParagraphContent(formula: Element, paragraph: HTMLElement): boolean {
+  for (let child = formula; child !== paragraph; child = child.parentElement!) {
+    const siblings = Array.from(child.parentNode?.childNodes ?? [])
+    if (siblings.some((node) => node !== child &&
+        (node.nodeType === Node.TEXT_NODE ? node.textContent?.trim() : node instanceof Element && !node.matches('br')))) {
+      return false
+    }
+  }
+  return true
+}
+
+const CLIPBOARD_LINE_BOUNDARY = 'br, hr, p, div, blockquote, li, ul, ol, dl, dt, dd, figure, figcaption, ' +
+  'section, article, table, thead, tbody, tr, td, th, pre, h1, h2, h3, h4, h5, h6, .katex-display, [data-math-block]'
+
+function sharesClipboardLine(formula: Element): boolean {
+  for (const side of ['previousSibling', 'nextSibling'] as const) {
+    for (let part: Element | null = formula; part; part = part.parentElement) {
+      let sibling = part[side]
+      while (sibling) {
+        const element = sibling instanceof Element ? sibling : null
+        if (element?.matches(CLIPBOARD_LINE_BOUNDARY)) break
+        if ((sibling.nodeType === Node.TEXT_NODE || element) && sibling.textContent?.trim()) return true
+        if (element?.matches('img, svg, math, mjx-container, [data-tex], [data-math-inline]')) return true
+        sibling = sibling[side]
+      }
+      if (sibling || part.parentElement?.matches(CLIPBOARD_LINE_BOUNDARY)) break
+    }
+  }
+  return false
+}
+
+/** Convert the clipboard's source and visual layers into one editable formula before HTML parsing. */
+export function normalizePastedMathHtml(html: string, getMacros: () => MathMacros): string {
+  if (!/ztext-math|katex|<(?:math|mjx-container)\b|eeimg|ee_img|equation\?/i.test(html)) return html
+  const fragment = document.createElement('template')
+  fragment.innerHTML = html
+  const root = fragment.content
+  const candidates = root.querySelectorAll(
+    '.ztext-math, .katex-display, .katex, math, mjx-container, img.ee_img, img.eeimg, img[eeimg], img[src*="equation?"]',
+  )
+  let macros: MathMacros | undefined
+  for (const candidate of candidates) {
+    // If the outer wrapper was converted, its MathML and rendered children are already gone.
+    if (!root.contains(candidate) || candidate.closest('code, pre, [data-math-inline], [data-math-block]')) continue
+    const latex = candidate.tagName === 'IMG'
+      ? zhihuEquationSource(candidate)
+      : candidate.getAttribute('data-tex')?.trim() ||
+        candidate.getAttribute('data-latex')?.trim() ||
+        candidate.querySelector('annotation[encoding="application/x-tex" i]')?.textContent?.trim()
+    if (!latex) continue
+    const wantsBlock = candidate.matches('.katex-display, [display="block" i], [display="true" i], img[eeimg="2"]') ||
+      candidate.matches('.ztext-math[data-block]:not([data-block="false"]):not([data-block="0"])')
+    const paragraph = candidate.closest('p')
+    // A quote can carry its text directly or inside a div, with no surrounding p.
+    const display = wantsBlock && !sharesClipboardLine(candidate)
+    const target = display && paragraph && isOnlyParagraphContent(candidate, paragraph) ? paragraph : candidate
+    target.replaceWith(mathElement(latex, display, macros ??= getMacros()))
+  }
+  return macros ? fragment.innerHTML : html
+}
+
 /**
  * 序列化前：把"渲染不出来"的公式按修好的写法写出去。
  *
@@ -415,26 +493,12 @@ export function injectMathIntoDom(root: HTMLElement): void {
   //    知乎按 alt 读 LaTeX 原文；alt 丢了就退回从 tex 参数解出来。
   root.querySelectorAll('img').forEach((img) => {
     if (img.closest('code, pre')) return
-    const src = img.getAttribute('src') ?? ''
-    const m = /(?:zhihu\.com)?\/equation\?tex=([^"'&\s]+)/.exec(src)
-    if (!m) return
-    let latex = (img.getAttribute('alt') ?? '').trim()
-    if (!latex) {
-      try {
-        latex = decodeURIComponent(m[1])
-      } catch {
-        latex = m[1]
-      }
-    }
-    latex = latex.trim()
+    const latex = zhihuEquationSource(img)
     if (!latex) return
     const display = img.getAttribute('eeimg') === '2'
-    // 顺手把坏写法修好（`\left { x \right }` 这种少反斜杠的）：不修的话存进节点里的就是坏写法，
-    // 导出的 HTML / PDF 会渲染成 KaTeX 报错红框（用户截图反馈过）
-    latex = repairLatex(latex, display, macros)
     // 块级公式：img 独占一段（或本身就在块级位置）时，整段换成块级公式；否则按行内插进文字里
     const holder = img.parentElement
-    const alone = !holder || holder.tagName !== 'P' || (holder.textContent ?? '').trim() === ''
+    const alone = !holder || holder.tagName !== 'P' || isOnlyParagraphContent(img, holder)
     if (display && alone) (holder && holder.tagName === 'P' ? holder : img).replaceWith(mathElement(latex, true, macros))
     else img.replaceWith(mathElement(latex, false, macros))
   })

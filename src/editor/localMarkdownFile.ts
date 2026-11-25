@@ -1,5 +1,6 @@
 import { stripExporterHeader } from './zhihuMarkdown'
 import { codeMask } from './tiptap/mathMarkdown'
+import { markdownFrontMatter, prependMarkdownFrontMatter } from './markdownFrontMatter'
 
 export interface LocalFileHandle extends FileSystemFileHandle {
   requestPermission(options: { mode: 'readwrite' }): Promise<PermissionState>
@@ -94,8 +95,15 @@ export function serializeLocalMarkdown(md: string, source: SourceFormat): string
   if (!source.finalNewline && body.endsWith('\n')) body = body.slice(0, -1)
   if (source.crlf) body = body.replace(/\n/g, '\r\n')
   const newline = source.crlf ? '\r\n' : '\n'
-  const separator = body && source.header && !source.header.endsWith('\n') ? newline + newline : ''
-  return (source.bom ? '\uFEFF' : '') + source.header + separator + body
+  const header = markdownFrontMatter(body) && markdownFrontMatter(source.header) ? '' : source.header
+  const separator = body && header && !header.endsWith('\n') ? newline + newline : ''
+  return (source.bom ? '\uFEFF' : '') + header + separator + body
+}
+
+/** An associated file can have a YAML header stored alongside the draft instead of in its body. */
+export function includeSourceFrontMatter(markdown: string, file?: LocalMarkdownFile): string {
+  const header = file && markdownFrontMatter(file.source.header)
+  return header && !markdownFrontMatter(markdown) ? prependMarkdownFrontMatter(header, markdown) : markdown
 }
 
 export async function localFileMatches(handle: LocalFileHandle, hash: string): Promise<boolean> {

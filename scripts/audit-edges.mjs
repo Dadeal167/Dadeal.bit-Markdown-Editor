@@ -205,7 +205,7 @@ record(
 /* ---------- 5. 快速操作不报错 ---------- */
 const beforeErrCount = errors.length
 for (let i = 0; i < 4; i += 1) {
-  await page.locator('.zh-btn[title^="主题"]').click()
+  await page.getByTitle('界面', { exact: true }).click()
   await page.waitForTimeout(120)
   await page.locator('.zh-menu__item', { hasText: i % 2 ? '深色' : '浅色' }).click()
   await page.waitForTimeout(150)
@@ -265,7 +265,7 @@ await page.screenshot({ path: resolve(OUT, 'edge-permil.png') })
 // 深色下的公式弹窗 + 字体面板 + 文档下拉
 await page.keyboard.press('Escape')
 await page.waitForTimeout(300)
-await page.locator('.zh-btn[title^="主题"]').click()
+await page.getByTitle('界面', { exact: true }).click()
 await page.waitForTimeout(200)
 await page.locator('.zh-menu__item', { hasText: '深色' }).click()
 await page.waitForTimeout(400)

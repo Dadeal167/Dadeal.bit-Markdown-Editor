@@ -23,16 +23,65 @@ try {
   await ready()
   assert.equal(await toolbar.isVisible(), true)
   assert.equal(await page.locator('.zh-statusbar__save').isVisible(), false)
-  await page.getByTitle('格式', { exact: true }).click()
-  await page.getByRole('button', { name: '三级标题', exact: true }).waitFor()
+  const labels = () => toolbar.locator('.zh-btn:visible .zh-btn__label').allTextContents()
+  const compactLabels = ['文档', '打开', '保存', '编辑', '字体', '图片', '公式', '插入', '搜索', '知乎', '特效', '界面', '工具']
+  const desktopLabels = ['文档', '打开', '保存', '撤销', '重做', '编辑', '加粗', '斜体', '字体',
+    '图片', '公式', '表格', '插入', '搜索', '大纲', '知乎', '特效', '界面', '工具']
+  const wideLabels = ['文档', '打开', '保存', '撤销', '重做', '编辑', '标题', '加粗', '斜体', '字体',
+    '列表', '引用', '代码块', '图片', '公式', '表格', '链接', '视频', '插入', '搜索', '大纲',
+    '阅读模式', '知乎', '特效', '界面', '工具']
+  for (const [width, expected] of [[2520, wideLabels], [1640, wideLabels], [1240, desktopLabels], [900, compactLabels]]) {
+    await page.setViewportSize({ width, height: 920 })
+    assert.deepEqual(await labels(), expected)
+    const layout = await toolbar.evaluate((node) => {
+      const buttons = [...node.querySelectorAll('.zh-btn')].filter((button) => button.getClientRects().length > 0)
+        .map((button) => button.getBoundingClientRect())
+      return {
+        singleRow: buttons.every(({ top }) => Math.abs(top - buttons[0].top) < 1),
+        withinBounds: buttons.at(-1).right < node.getBoundingClientRect().right,
+        fixedSize: buttons.every(({ width, height }) => width >= 56 && width <= 60 && height === 40),
+        tabsBelow: node.nextElementSibling.getBoundingClientRect().top >= node.getBoundingClientRect().bottom,
+      }
+    })
+    assert.ok(layout.singleRow && layout.tabsBelow && layout.withinBounds && layout.fixedSize,
+      `工具栏在 ${width}px 应保持按钮尺寸与下一行标签：${JSON.stringify(layout)}`)
+  }
+  await page.setViewportSize({ width: 390, height: 844 })
+  assert.deepEqual(await labels(), compactLabels)
+  await page.getByTitle('编辑', { exact: true }).click()
+  await page.getByRole('button', { name: '撤销', exact: true }).waitFor()
+  await page.keyboard.press('Escape')
+  await page.setViewportSize({ width: 1680, height: 920 })
+  assert.equal(await toolbar.getByRole('button', { name: '公式', exact: true }).evaluate(button => getComputedStyle(button).flexDirection), 'column')
+  await toolbar.getByTitle('标题', { exact: true }).click()
+  await toolbar.getByRole('button', { name: '二级标题', exact: true }).waitFor()
+  await page.keyboard.press('Escape')
+  await toolbar.getByTitle('大纲', { exact: true }).click()
+  await page.locator('.zh-outline').waitFor()
+  await toolbar.getByTitle('大纲', { exact: true }).click()
+  await page.locator('.zh-outline').waitFor({ state: 'hidden' })
+  await page.getByTitle('编辑', { exact: true }).click()
+  await page.getByRole('group', { name: '编辑历史', exact: true }).getByRole('button', { name: '重做', exact: true }).waitFor()
+  await page.getByRole('group', { name: '文字格式', exact: true }).getByRole('button', { name: '清除格式', exact: true }).waitFor()
+  await page.getByRole('group', { name: '段落格式', exact: true }).getByRole('button', { name: '三级标题', exact: true }).waitFor()
+  await page.keyboard.press('Escape')
+  await page.getByTitle('界面', { exact: true }).click()
+  const view = page.getByRole('group', { name: '文档视图', exact: true })
+  await view.getByRole('button', { name: '阅读模式', exact: true }).waitFor()
+  await view.getByRole('button', { name: '专注模式', exact: true }).waitFor()
+  await view.getByRole('button', { name: '大纲', exact: true }).click()
+  await page.locator('.zh-outline').waitFor()
+  await page.getByTitle('界面', { exact: true }).click()
+  await view.getByRole('button', { name: '大纲', exact: true }).click()
+  await page.locator('.zh-outline').waitFor({ state: 'hidden' })
   await page.keyboard.press('Escape')
   await page.getByTitle('插入', { exact: true }).click()
-  await page.getByRole('button', { name: '表格', exact: true }).click()
+  await toolbar.locator('.zh-menu').getByRole('button', { name: '表格', exact: true }).click()
   await page.getByRole('dialog', { name: '插入表格', exact: true }).waitFor()
   await page.keyboard.press('Escape')
   await page.getByTitle('更多', { exact: true }).click()
   assert.deepEqual(await page.locator('.zh-menu--organized .zh-menu__section').allTextContents(),
-    ['文档与工作区', '写作与学术', '保存与发布', '检查与诊断', '视图与快捷键', '格式与插入', '帮助与维护'])
+    ['文档与工作区', '编辑与插入', '写作与学术', '保存与发布', '检查与诊断', '视图与快捷键', '帮助与维护'])
   const toolsSearch = page.getByRole('searchbox', { name: '搜索功能', exact: true })
   const toolsMenu = page.locator('.zh-menu--organized')
   assert.equal(await toolsMenu.evaluate(node => getComputedStyle(node).animationName), 'zh-panel-in')
@@ -88,10 +137,16 @@ try {
   await orb.click()
   await page.waitForTimeout(3200)
   assert.equal(await toolbar.isVisible(), true, '工具栏展开时不应空闲隐藏')
-  await page.getByTitle('加粗', { exact: true }).click()
+  await page.getByTitle('编辑', { exact: true }).click()
+  await page.getByRole('button', { name: '加粗', exact: true }).click()
   assert.equal(await page.evaluate(() => window.__EDITOR__.isActive('bold')), true)
   assert.equal(await page.evaluate(() => window.__EDITOR__.getText()), '选区内容与后续正文。')
-  await page.getByTitle('撤销', { exact: true }).click()
+  await page.getByTitle('编辑', { exact: true }).click()
+  await page.getByRole('button', { name: '撤销', exact: true }).click()
+  assert.equal(await page.evaluate(() => window.__EDITOR__.isActive('bold')), false)
+  await page.getByTitle('编辑', { exact: true }).click()
+  await page.getByRole('button', { name: '重做', exact: true }).click()
+  assert.equal(await page.evaluate(() => window.__EDITOR__.isActive('bold')), true)
   await page.locator('.zh-title').click()
   assert.equal(await toolbar.isVisible(), false)
   await page.reload()
@@ -135,7 +190,7 @@ try {
   assert.equal(await page.locator('html').getAttribute('data-memory-lobby'), 'on')
   await orb.click()
   assert.equal(await page.locator('.zh-fx').isVisible(), false)
-  await page.getByTitle('主题', { exact: true }).click()
+  await page.getByTitle('界面', { exact: true }).click()
   await page.getByRole('button', { name: '深色', exact: true }).click()
   assert.equal(await page.locator('html').getAttribute('data-theme'), 'dark')
   await page.getByRole('button', { name: '收起编辑工具栏', exact: true }).click()

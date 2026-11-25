@@ -26,6 +26,8 @@ import { looksLikeFormula, stripExporterHeader } from './zhihuMarkdown'
 import type { Typography } from './typography'
 import { sniffImage } from '../../scripts/imageFormat.mjs'
 import { editionDocument, hasEditionBlocks } from './publication/editions'
+import { markdownFrontMatter, prependMarkdownFrontMatter } from './markdownFrontMatter'
+import { projectPortableBlocks } from './tiptap/portableMarkdown'
 
 /** 正文里"还是原文的 $…$ 公式"：体检数量与一键转换（实现见 math/rawMathText.ts） */
 export { convertRawMath, countRawMath }
@@ -52,7 +54,14 @@ export function getMarkdown(editor: Editor, doc = editor.state.doc): string {
   // 2) 公式标记换回 $…$，其余字面 $ 转义成 \$（否则"原价 $100，现价 $60"会被当成公式）
   // 3) 存之前把"渲染不出来"的公式按修好的写法写出去 —— 否则界面上显示是好的、
   //    存下来还是坏写法，拿别的软件打开就是 Invalid Mathematical Formula（实测用户踩到过）
-  return finalizeMarkdown(escapeTablePipes(editor, repairMathInMarkdown(raw, documentMacros(doc).macros), doc))
+  const body = finalizeMarkdown(escapeTablePipes(editor, repairMathInMarkdown(raw, documentMacros(doc).macros), doc))
+  let header = ''
+  if (editor.schema.nodes.markdownFrontMatter) {
+    doc.forEach((node) => {
+      if (!header && node.type.name === 'markdownFrontMatter') header = String(node.attrs.source)
+    })
+  }
+  return prependMarkdownFrontMatter(header, body)
 }
 
 export function setMarkdown(editor: Editor, md: string, retainImportedImages = false): { fixedMath: number } {
@@ -61,6 +70,8 @@ export function setMarkdown(editor: Editor, md: string, retainImportedImages = f
   //    全是"豆腐块" □、公式退化成纯文本。守卫把成对标记还原成 $…$（公式不丢）、
   //    孤立控制字符删掉，正常文档原样返回（开头就 return，不花钱）。
   md = stripLeakedMarks(md, 'setMarkdown 载入')
+  const header = editor.schema.nodes.markdownFrontMatter ? markdownFrontMatter(md) : ''
+  if (header) md = md.slice(header.length)
   const macros = markdownMacros(md)
   // 顺序很重要：
   //   1) 一趟扫出公式：\$（公式外面）保护成占位符、$…$ / $$…$$ 整段换成占位符
@@ -92,7 +103,8 @@ export function setMarkdown(editor: Editor, md: string, retainImportedImages = f
       embedded.set(String(node.attrs.localAsset), String(node.attrs.src))
     })
   }
-  editor.commands.setContent(escapeMarkdownDestinations(protectedMd))
+  const metadata = header ? `<div data-markdown-front-matter="${encodeURIComponent(header)}"></div>\n\n` : ''
+  editor.commands.setContent(metadata + escapeMarkdownDestinations(protectedMd))
   if (embedded.size) {
     const transaction = editor.state.tr
     for (const image of collectBrokenImages(editor)) {
@@ -794,6 +806,7 @@ export function buildExportBody(editor: Editor, format: 'document' | 'zhihu' = '
   if (!root) return raw
   const { macros } = documentMacros(content)
   if (__BUILD_MODE__ === 'effect') {
+    projectPortableBlocks(root)
     for (const code of root.querySelectorAll(`pre > code.language-${MACRO_LANGUAGE}`)) code.parentElement?.remove()
   }
   if (__BUILD_MODE__ === 'effect') projectObjectHtml(root, content, format === 'zhihu')

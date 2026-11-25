@@ -31,7 +31,7 @@ const ready = async () => {
   await page.waitForTimeout(1200)
 }
 const pickTheme = async (label) => {
-  await page.locator('.zh-btn[title^="主题"]').click()
+  await page.getByTitle('界面', { exact: true }).click()
   await page.waitForTimeout(200)
   await page.locator('.zh-menu__item', { hasText: label }).click()
   await page.waitForTimeout(400)
@@ -87,7 +87,7 @@ const contrast = await page.evaluate(() => {
 record('深色下文字与底色对比足够', contrast >= 60, `亮度差 ${contrast}%`)
 
 /* 3. 工具栏 / 状态栏 / 下拉 / 弹窗也变深 */
-await page.locator('.zh-btn[title^="主题"]').click()
+await page.getByTitle('界面', { exact: true }).click()
 await page.waitForTimeout(300)
 const menuBg = await page.evaluate(() => {
   const el = document.querySelector('.zh-menu')
@@ -159,10 +159,10 @@ record(
 const markedItem = async (p) => {
   await p.keyboard.press('Escape')
   await p.waitForTimeout(120)
-  await p.locator('.zh-btn[title^="主题"]').click()
+  await p.getByTitle('界面', { exact: true }).click()
   await p.waitForTimeout(250)
   // 选中项里有 ✓，读的时候去掉再比
-  const marked = await p.$$eval('.zh-menu .zh-menu__item--on', (els) =>
+  const marked = await p.$$eval('.zh-menu .zh-menu__item--on:is([data-key="light"], [data-key="dark"], [data-key="system"])', (els) =>
     els.map((e) => e.textContent.replace('✓', '').trim()),
   )
   await p.keyboard.press('Escape')
@@ -260,7 +260,7 @@ await page2.waitForTimeout(1200)
   const DIM = 'rgb(230, 232, 234)'
   // 确保是"跟随系统"
   await page2.keyboard.press('Escape')
-  await page2.locator('.zh-btn[title^="主题"]').click()
+  await page2.getByTitle('界面', { exact: true }).click()
   await page2.waitForTimeout(200)
   await page2.locator('.zh-menu__item', { hasText: '跟随系统' }).click()
   await page2.waitForTimeout(400)

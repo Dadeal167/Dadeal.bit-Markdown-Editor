@@ -23,6 +23,7 @@ interface Props {
   onOpenEffects?: () => void
   onSaveAction(format: SaveFormat): void
   hasLocalFile: boolean
+  documentTabs?: ReactNode
 }
 
 const TOOLBAR_MODE_KEY = 'dadealbit-toolbar-mode-v1'
@@ -33,7 +34,7 @@ function loadToolbarMode(): ToolbarMode {
 }
 
 export default function Toolbar({ api, handlers, extraLeading, typographyMenu, effectPanel, saveMenu, onDismissPanels,
-  panelsOpen, onOpenEffects, onSaveAction, hasLocalFile }: Props) {
+  panelsOpen, onOpenEffects, onSaveAction, hasLocalFile, documentTabs }: Props) {
   const [mode, setMode] = useState(loadToolbarMode)
   const [expanded, setExpanded] = useState(false)
   const [orbVisible, setOrbVisible] = useState(true)
@@ -169,6 +170,7 @@ export default function Toolbar({ api, handlers, extraLeading, typographyMenu, e
         ))}
       </div>
       </div>
+      {documentTabs}
     </div>
   )
 }

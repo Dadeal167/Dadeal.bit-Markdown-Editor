@@ -340,10 +340,10 @@ check(
   `<${afterClick.activeTag} class="${afterClick.activeClass}">`,
 )
 
-// 3d 搜不到时给"没找到"
+// 3d 搜不到时显示空结果状态
 await page.locator('.zh-search__input').fill('不存在的水果名')
 await page.waitForTimeout(400)
-check('搜不到时显示「没找到」', (await page.locator('.zh-search__count').textContent())?.trim() === '没找到')
+check('搜不到时显示「无匹配结果」', (await page.locator('.zh-search__count').textContent())?.trim() === '无匹配结果')
 
 // 3e Esc 关掉 + 高亮不残留 + 文档没被改
 await page.locator('.zh-search__input').fill('苹果')
@@ -407,7 +407,9 @@ check('全部替换覆盖正文，保留两条公式', await page.evaluate(() =>
 check('命中公式时无法用正文替换按钮修改公式', await page.getByRole('button', { name: '替换当前', exact: true }).isDisabled())
 check('只剩公式命中时禁用全部替换文字', await page.getByRole('button', { name: '全部替换文字', exact: true }).isDisabled())
 await page.getByRole('textbox', { name: '替换为', exact: true }).press('Escape')
-await page.locator('.zh-btn[title="撤销"]').click()
+const undo = page.getByRole('button', { name: '撤销', exact: true })
+if (!await undo.isVisible()) await page.getByTitle('编辑', { exact: true }).click()
+await undo.click()
 check('一次撤销整次批量替换，保留先前单次替换', await page.evaluate(() =>
   window.__EDITOR__.state.doc.firstChild.textContent === '经典力学；牛顿力学'))
 check('全程没有 JS 报错', errors.length === 0, errors.slice(0, 2).join(' | '))

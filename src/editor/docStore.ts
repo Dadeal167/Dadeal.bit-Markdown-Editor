@@ -147,19 +147,27 @@ export async function idbLoadAll(): Promise<DocStore | null> {
 }
 
 /** 只写变化的那几篇 + 删掉被移除的 + 记住当前是第几篇 */
-export async function idbSaveChanged(changed: Doc[], removed: string[], currentId: string): Promise<void> {
-  if (!changed.length && !removed.length) {
-    await tx('readwrite', (t) => {
-      t.objectStore(META).put({ k: 'currentId', v: currentId })
-    })
-    return
-  }
-  await tx('readwrite', (t) => {
+export async function idbSaveChanged(changed: Doc[], removed: string[], currentId: string,
+  recover?: (id: string, stored: Doc | undefined, next?: Doc) => Doc | undefined): Promise<Doc[]> {
+  return tx('readwrite', async (t) => {
     const docs = t.objectStore(DOCS)
+    const copies: Doc[] = []
+    if (recover) {
+      const entries = [...changed.map((doc) => ({ id: doc.id, next: doc })), ...removed.map((id) => ({ id, next: undefined }))]
+      const stored = await Promise.all(entries.map(({ id }) => wrap(docs.get(id)) as Promise<Doc | undefined>))
+      for (const [index, { id, next }] of entries.entries()) {
+        const copy = recover(id, stored[index], next)
+        if (copy) {
+          docs.add(copy)
+          copies.push(copy)
+        }
+      }
+    }
     for (const d of changed) docs.put(d)
     for (const id of removed) docs.delete(id)
     t.objectStore(META).put({ k: 'currentId', v: currentId })
-    t.objectStore(META).put({ k: 'savedAt', v: Date.now() })
+    if (changed.length || removed.length) t.objectStore(META).put({ k: 'savedAt', v: Date.now() })
+    return copies
   })
 }
 

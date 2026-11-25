@@ -69,6 +69,13 @@ let dirtyIds = new Set<string>()
 let pendingRemoved = new Set<string>()
 /** 启动超时后显示的备份，用于区分备份中的旧数据和用户刚做的改动。 */
 let fallbackBase: DocStore | null = null
+const confirmedDocs = new Map<string, Doc>()
+let saveQueue: Promise<void> = Promise.resolve()
+let onConflict: ((copies: Doc[]) => void) | null = null
+export function onStoreConflict(callback: typeof onConflict): void {
+  onConflict = callback
+}
+
 let onReloaded: ((store: DocStore, live?: Doc) => void) | null = null
 let readLiveDoc: (() => Doc | undefined) | undefined
 export function onStoreReloaded(cb: typeof onReloaded, snapshot?: typeof readLiveDoc): void {
@@ -239,6 +246,7 @@ export async function initDocStore(): Promise<DocStore> {
   const merged = base && local ? mergeStartupChanges(fromIdb, base, local, live) : fromIdb
   fallbackBase = null
   cache = fromIdb
+  for (const doc of fromIdb.docs) confirmedDocs.set(doc.id, doc)
   idbOk = true
   backend = 'indexeddb'
   if (merged !== fromIdb) saveStore(merged)
@@ -256,6 +264,11 @@ function sameContent(a: Doc, b: Doc | undefined): boolean {
       const other = b.versions?.[i]
       return version.at === other?.at && version.title === other.title && version.md === other.md
     })
+}
+
+function recoverOtherDraft(stored: Doc | undefined, base?: Doc, next?: Doc): Doc | undefined {
+  if (!stored || sameContent(stored, next) || sameContent(stored, base)) return undefined
+  return { ...stored, id: newId(), title: `${docLabel(stored)}（冲突副本）`, trashedAt: undefined, at: Date.now() }
 }
 
 /** 将启动等待期间的改动应用到数据库版本，备份中的旧内容不参与覆盖。 */
@@ -317,33 +330,48 @@ export function saveStore(store: DocStore, onSaved?: (ok: boolean) => void): boo
     expose()
 
     const prevById = new Map((prev?.docs ?? []).map((d) => [d.id, d]))
-    const changed = store.docs.filter((d) => {
-      // 上次没写成功的（或界面先渲染那段时间改过的）：无条件重写一遍
-      if (dirtyIds.has(d.id)) return true
+    const changedIds = new Set(store.docs.filter((d) => {
       const p = prevById.get(d.id)
       return p !== d && (!sameContent(d, p) || p?.at !== d.at)
-    })
-    const removed = [
-      ...(prev?.docs ?? []).filter((d) => !store.docs.some((x) => x.id === d.id)).map((d) => d.id),
-      ...pendingRemoved,
-    ]
-    void idbSaveChanged(changed, removed, store.currentId)
-      .then(() => {
-        // ⚠️ 只把"这次真的写进去的"从待重试队列里摘掉。
-        // 不能整体 clear：这次可能只写了元数据（changed 为空），
-        // 那样会把上一次没写成功的文档从队列里抹掉 —— 等于白修。
-        for (const d of changed) dirtyIds.delete(d.id)
-        for (const id of removed) pendingRemoved.delete(id)
-        if (lastWriteFailed && !dirtyIds.size && !pendingRemoved.size) {
-          lastWriteFailed = false
-          onOk?.()
-        }
-        expose()
-        onSaved?.(true)
-      }, () => {
-        failWrite(store, changed.map((d) => d.id), removed)
+    }).map((d) => d.id))
+    const nextIds = new Set(store.docs.map((d) => d.id))
+    const removedIds = (prev?.docs ?? []).filter((d) => !nextIds.has(d.id)).map((d) => d.id)
+    saveQueue = saveQueue.then(async () => {
+      // 轮到这次保存时，上一笔事务的提交结果与待重试项目都已确定。
+      const changed = store.docs.filter((d) => changedIds.has(d.id) || dirtyIds.has(d.id))
+      const removed = [...new Set([...removedIds, ...[...pendingRemoved].filter((id) => !nextIds.has(id))])]
+      let copies: Doc[]
+      try {
+        copies = await idbSaveChanged(changed, removed, store.currentId,
+          __BUILD_MODE__ === 'effect' ? (id, stored, next) => recoverOtherDraft(stored, confirmedDocs.get(id), next) : undefined)
+      } catch {
+        failWrite(cache ?? store, changed.map((d) => d.id), removed)
         onSaved?.(false)
-      })
+        return
+      }
+      for (const d of changed) {
+        dirtyIds.delete(d.id)
+        pendingRemoved.delete(d.id)
+        confirmedDocs.set(d.id, d)
+      }
+      for (const id of removed) {
+        pendingRemoved.delete(id)
+        dirtyIds.delete(id)
+        confirmedDocs.delete(id)
+      }
+      if (copies.length && cache) {
+        cache = { ...cache, docs: [...copies, ...cache.docs] }
+        for (const copy of copies) confirmedDocs.set(copy.id, copy)
+        backupToLocal(cache)
+        onConflict?.(copies)
+      }
+      if (lastWriteFailed && !dirtyIds.size && !pendingRemoved.size) {
+        lastWriteFailed = false
+        onOk?.()
+      }
+      expose()
+      onSaved?.(true)
+    })
     // 冷备份：整库还小就再写一份到 localStorage（图个安心）；大了跳过，免得又撞上限
     backupToLocal(store)
     /* 返回值只说"这次调用有没有同步地失败"。
@@ -356,8 +384,10 @@ export function saveStore(store: DocStore, onSaved?: (ok: boolean) => void): boo
 
   // 没有 IndexedDB（或还没就绪）：完全走老路
   try {
-    localStorage.setItem(DOCS_KEY, JSON.stringify(store))
-    cache = store
+    const result = __BUILD_MODE__ === 'effect' && cache && !fallbackBase ? mergeLocalDrafts(store, cache) : { store, copies: [] }
+    localStorage.setItem(DOCS_KEY, JSON.stringify(result.store))
+    cache = result.copies.length ? { ...store, docs: [...result.copies, ...store.docs] } : store
+    if (result.copies.length) queueMicrotask(() => onConflict?.(result.copies))
     expose()
   } catch {
     onSaved?.(false)
@@ -365,6 +395,28 @@ export function saveStore(store: DocStore, onSaved?: (ok: boolean) => void): boo
   }
   onSaved?.(true)
   return true
+}
+
+function mergeLocalDrafts(desired: DocStore, base: DocStore) {
+  const raw = localStorage.getItem(DOCS_KEY)
+  let latest: DocStore | undefined
+  try { if (raw) latest = JSON.parse(raw) as DocStore }
+  catch { /* 继续使用本标签页已载入的数据。 */ }
+  if (!Array.isArray(latest?.docs)) return { store: desired, copies: [] }
+  const stored = new Map(latest.docs.map((doc) => [doc.id, doc]))
+  const before = new Map(base.docs.map((doc) => [doc.id, doc]))
+  const next = new Map(desired.docs.map((doc) => [doc.id, doc]))
+  const copies: Doc[] = []
+  for (const id of new Set([...before.keys(), ...next.keys()])) {
+    const old = before.get(id)
+    const incoming = next.get(id)
+    if (incoming && sameContent(incoming, old)) continue
+    const copy = recoverOtherDraft(stored.get(id), old, incoming)
+    if (copy) copies.push(copy)
+    if (incoming) stored.set(id, incoming)
+    else stored.delete(id)
+  }
+  return { store: { ...desired, docs: [...copies, ...stored.values()] }, copies }
 }
 
 /** 写失败：记下"哪几篇没写成功"（下次重试），用 localStorage 兜一份，并让界面提示 */

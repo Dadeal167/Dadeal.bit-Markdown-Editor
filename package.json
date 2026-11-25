@@ -1,7 +1,7 @@
 {
   "name": "dadealbit-markdown-editor",
   "private": true,
-  "version": "1.2.0",
+  "version": "1.2.1",
   "type": "module",
   "scripts": {
     "audit:buttons": "node scripts/button-audit.mjs",
@@ -20,7 +20,12 @@
     "build:online": "tsc --noEmit && vite build --mode online",
     "build:web": "tsc --noEmit && vite build --mode web",
     "check:all": "node scripts/check-all.mjs",
-    "check:effects": "node scripts/check-editions-reading.mjs && node scripts/check-toolbar-interface.mjs && node scripts/check-workspace-publication.mjs && node scripts/check-lobby-history.mjs",
+    "check:effects": "node scripts/check-editions-reading.mjs && node scripts/check-toolbar-interface.mjs && node scripts/check-workspace-publication.mjs && node scripts/check-lobby-history.mjs && node scripts/check-markdown-draft-safety.mjs && node scripts/check-document-tabs.mjs",
+    "check:document-tabs": "node scripts/check-document-tabs.mjs",
+    "check:gif-paste": "node scripts/check-gif-paste.mjs",
+    "check:markdown-draft-safety": "node scripts/check-markdown-draft-safety.mjs",
+    "check:remote-images": "node scripts/check-remote-images.mjs",
+    "check:zhihu-rich-paste": "node scripts/check-zhihu-rich-paste.mjs",
     "check:assistant-bundle": "node scripts/check-assistant-bundle.mjs",
     "check:assistant-inject": "node scripts/check-assistant-inject.mjs",
     "check:codelang": "node scripts/check-codelang.mjs",

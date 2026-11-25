@@ -1,7 +1,8 @@
 import type { Editor } from '@tiptap/core'
 import { sniffImage } from '../../scripts/imageFormat.mjs'
 import { getMarkdown } from './editorActions'
-import { writeLocalMarkdown, type LocalFileHandle } from './localMarkdownFile'
+import { includeSourceFrontMatter, writeLocalMarkdown, type LocalFileHandle, type LocalMarkdownFile } from './localMarkdownFile'
+import { remoteImages } from './remoteImages'
 import { resolveProjectAsset, type AssetScope } from './workspace/documentAssets'
 
 function extension(bytes: Uint8Array, mime: string) {
@@ -22,8 +23,9 @@ export async function storeClipboardAsset(directory: FileSystemDirectoryHandle, 
   return 'assets/' + name
 }
 
-export async function packMarkdownAssets(editor: Editor, title: string, scope?: AssetScope) {
+export async function packMarkdownAssets(editor: Editor, title: string, scope?: AssetScope, localFile?: LocalMarkdownFile) {
   const tr = editor.state.tr
+  const online = remoteImages(tr.doc)
   const images: { pos: number; attrs: Record<string, unknown> }[] = []
   tr.doc.descendants((node, pos) => { if (node.type.name === 'image') images.push({ pos, attrs: node.attrs }) })
   const files: Record<string, Uint8Array> = {}
@@ -54,10 +56,14 @@ export async function packMarkdownAssets(editor: Editor, title: string, scope?: 
     if (path) tr.setNodeMarkup(pos, undefined, { ...attrs, src: path, localAsset: '' })
     else missing += 1
   }
-  const markdown = getMarkdown(editor, tr.doc)
+  const markdown = includeSourceFrontMatter(getMarkdown(editor, tr.doc), localFile)
   const name = title.trim().replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').replace(/^[ .]+|[ .]+$/g, '') || '未命名文档'
   files[name + '.md'] = new TextEncoder().encode(markdown)
+  if (online.length) {
+    const report = ['以下图片仍使用网络地址。', '', ...online.flatMap(({ name, source }) => [name, source, ''])].join('\n')
+    files['联网图片.txt'] = new TextEncoder().encode(report)
+  }
   const { zipSync } = await import('fflate')
   const zip = zipSync(files, { level: 0 })
-  return { name: name + '.zip', missing, blob: new Blob([new Uint8Array(zip)], { type: 'application/zip' }) }
+  return { name: name + '.zip', missing, online: online.length, blob: new Blob([new Uint8Array(zip)], { type: 'application/zip' }) }
 }

@@ -4,6 +4,10 @@ import type { Editor } from '@tiptap/core'
 import Toolbar from './Toolbar'
 import type { ToolbarHandlers } from './toolbar/toolbarItems'
 import StatusBar from './StatusBar'
+import ZhihuImportModal from './ZhihuImportModal'
+import { desktopZhihuConnection } from './zhihuDesktop'
+import DocumentTabs, { documentTabId } from './DocumentTabs'
+import { useDocumentTabs } from './useDocumentTabs'
 import MathModal from './MathModal'
 import TableModal from './TableModal'
 import TableMenu from './TableMenu'
@@ -53,7 +57,8 @@ import SaveMenu from './publication/SaveMenu'
 import type { SaveFormat } from './publication/saveOptions'
 import { loadLocalMarkdownFiles, storeLocalMarkdownFile } from './docStore'
 import {
-  localFileMatches, localFilePickers, markdownHash, markdownTypes, projectImportedImages, readLocalMarkdown, serializeLocalMarkdown,
+  includeSourceFrontMatter, localFileMatches, localFilePickers, markdownHash, markdownTypes, projectImportedImages,
+  readLocalMarkdown, serializeLocalMarkdown,
   writeLocalMarkdown, type LocalDirectoryHandle, type LocalFileHandle, type LocalMarkdownFile,
 } from './localMarkdownFile'
 import { exportZhihuMarkdown } from './saveFormats'
@@ -91,8 +96,10 @@ import {
   DEMO_MD,
   createDoc,
   captureDocVersion,
+  docLabel,
   isDocStoreLoading,
   loadStore,
+  onStoreConflict,
   onStoreReloaded,
   onStoreWriteFailed,
   onStoreWriteOk,
@@ -123,12 +130,19 @@ export default function ZhihuEditor() {
   const [currentId, setCurrentId] = useState(bootDoc.id)
   const [localFiles, setLocalFiles] = useState(() => new Map<string, LocalMarkdownFile>())
   const [localFilesReady, setLocalFilesReady] = useState(!LOCAL_FILE_EDITING)
+  const [zhihuImportOpen, setZhihuImportOpen] = useState(false)
   const [localConflict, setLocalConflict] = useState<string | null>(null)
   const [localConflictError, setLocalConflictError] = useState('')
   const [localOperation, setLocalOperation] = useState<string | null>(null)
   const [folderDocuments, setFolderDocuments] = useState<{ handle: LocalFileHandle; directory: FileSystemDirectoryHandle }[]>([])
   const localOperationRef = useRef<string | null>(null)
-  const [diskStatus, setDiskStatus] = useState<{ id: string; file: LocalMarkdownFile; md: string; saved: boolean }>()
+  const [diskStatuses, setDiskStatuses] = useState(() => new Map<string, { file: LocalMarkdownFile; md: string; saved: boolean }>())
+  const draftRevisions = useRef(new Map<string, number>())
+  const draftRevision = useRef(0)
+  const [pendingDraftIds, setPendingDraftIds] = useState<ReadonlySet<string>>(() => new Set())
+  const { ids: openDocumentIds, capture: captureDocumentView, restore: restoreDocumentView, close: closeDocumentView } =
+    useDocumentTabs(LOCAL_FILE_EDITING, docs, currentId)
+  const displayedDoc = useRef(currentId)
   const [markdownInput, setMarkdownInput] = useState(true)
   const [sourceEdit, setSourceEdit] = useState<{ id: string; initial: string } | null>(null)
   const [localVideo, setLocalVideo] = useState<{ id: string; path: string }>()
@@ -266,6 +280,7 @@ export default function ZhihuEditor() {
   const currentIdRef = useRef(currentId)
   const localFile = localFiles.get(currentId)
   const storedMarkdown = docs.find((doc) => doc.id === currentId)?.md
+  const diskStatus = diskStatuses.get(currentId)
 
   useEffect(() => {
     if (!LOCAL_FILE_EDITING) return
@@ -279,23 +294,48 @@ export default function ZhihuEditor() {
   }, [])
 
   useEffect(() => {
-    if (!localFile || storedMarkdown === undefined) return
+    if (!LOCAL_FILE_EDITING) return
+    const checks = docs.flatMap((doc) => {
+      const file = localFiles.get(doc.id)
+      const checked = diskStatuses.get(doc.id)
+      return file && openDocumentIds.includes(doc.id) && (checked?.file !== file || checked.md !== doc.md)
+        ? [{ id: doc.id, file, md: doc.md }] : []
+    })
+    if (!checks.length) return
     let active = true
-    void markdownHash(projectImportedImages(storedMarkdown, true)).then((hash) => {
-      if (active) setDiskStatus({ id: currentId, file: localFile, md: storedMarkdown, saved: hash === localFile.editorHash })
-    }).catch(() => {})
+    void Promise.all(checks.map(async ({ id, file, md }) => {
+      const hash = await markdownHash(projectImportedImages(md, true)).catch(() => undefined)
+      return [id, { file, md, saved: hash === file.editorHash }] as const
+    })).then((checked) => {
+      if (active) setDiskStatuses((previous) => new Map([...previous, ...checked]))
+    })
     return () => { active = false }
-  }, [currentId, localFile, storedMarkdown])
+  }, [diskStatuses, docs, localFiles, openDocumentIds])
 
   const writeStore = useCallback((nextDocs: Doc[], nextId: string, onSaved?: (ok: boolean) => void): boolean => {
-    const ok = saveStore({ docs: nextDocs, currentId: nextId }, onSaved)
+    const saving = draftRevisions.current.size ? new Map(draftRevisions.current) : undefined
+    const afterSave = (ok: boolean) => {
+      if (ok && saving) {
+        let changed = false
+        for (const [id, revision] of saving) {
+          if (draftRevisions.current.get(id) === revision) {
+            draftRevisions.current.delete(id)
+            changed = true
+          }
+        }
+        if (changed) setPendingDraftIds(new Set(draftRevisions.current.keys()))
+      }
+      onSaved?.(ok)
+    }
+    const ok = saveStore({ docs: nextDocs, currentId: nextId }, saving ? afterSave : onSaved)
     if (!ok) return false
+    if (nextId !== currentIdRef.current) captureDocumentView(currentIdRef.current, editorRef.current)
     docsRef.current = nextDocs
     currentIdRef.current = nextId
     setDocs(nextDocs)
     setCurrentId(nextId)
     return true
-  }, [])
+  }, [captureDocumentView])
 
   const withCurrentContent = useCallback((md: string, at: number) => {
     const title = titleRef.current
@@ -350,6 +390,12 @@ export default function ZhihuEditor() {
   )
 
   const scheduleSave = useCallback(() => {
+    if (LOCAL_FILE_EDITING) {
+      const id = currentIdRef.current
+      const firstPending = !draftRevisions.current.has(id)
+      draftRevisions.current.set(id, ++draftRevision.current)
+      if (firstPending) setPendingDraftIds(new Set(draftRevisions.current.keys()))
+    }
     if (saveTimer.current !== null) window.clearTimeout(saveTimer.current)
     saveTimer.current = window.setTimeout(() => persistDraft(), SAVE_DELAY_MS)
   }, [persistDraft])
@@ -360,6 +406,20 @@ export default function ZhihuEditor() {
     if (fixNoteTimer.current !== null) window.clearTimeout(fixNoteTimer.current)
     fixNoteTimer.current = window.setTimeout(() => setFixNote(null), 9000)
   }, [])
+
+  useEffect(() => {
+    if (!LOCAL_FILE_EDITING) return
+    onStoreConflict((copies) => {
+      const added = copies.filter((copy) => !docsRef.current.some((doc) => doc.id === copy.id))
+      if (!added.length) return
+      docsRef.current = [...added, ...docsRef.current]
+      setDocs(docsRef.current)
+      flash(added.length === 1
+        ? `检测到其他标签页的修改，已在文档列表保留「${added[0].title}」。`
+        : `检测到其他标签页的修改，已在文档列表保留 ${added.length} 篇冲突副本。`)
+    })
+    return () => onStoreConflict(null)
+  }, [flash])
 
   const snapshotDocuments = useCallback(() => {
     if (isDocStoreLoading()) throw new Error('文档库仍在加载，请稍后重试。')
@@ -549,6 +609,7 @@ export default function ZhihuEditor() {
       setTitle(target.title)
       mdRef.current = target.md
       setSavedAt(target.at)
+      if (LOCAL_FILE_EDITING) setIssuesHidden(false)
       if (ed) {
         actions.setMarkdown(ed, target.md)
         scanIssues()
@@ -557,6 +618,13 @@ export default function ZhihuEditor() {
     },
     [scanIssues, withCurrentContent, writeStore],
   )
+
+  const closeDocumentTab = useCallback((id: string) => {
+    const index = openDocumentIds.indexOf(id)
+    if (index < 0 || openDocumentIds.length < 2) return
+    if (id === currentIdRef.current && !switchDoc(openDocumentIds[index + 1] ?? openDocumentIds[index - 1])) return
+    closeDocumentView(id)
+  }, [closeDocumentView, openDocumentIds, switchDoc])
 
   /** 新建一篇空文档并切过去（示例内容只留给第一次打开时的第一篇） */
   const createDocument = useCallback(() => {
@@ -594,6 +662,7 @@ export default function ZhihuEditor() {
         flash('无法移入回收站。请检查浏览器存储。')
         return
       }
+      closeDocumentView(id)
       if (wasCurrent) {
         if (saveTimer.current !== null) window.clearTimeout(saveTimer.current)
         titleRef.current = target.title
@@ -607,7 +676,7 @@ export default function ZhihuEditor() {
         }
       }
     },
-    [flash, scanIssues, snapshotDocuments, writeStore],
+    [closeDocumentView, flash, scanIssues, snapshotDocuments, writeStore],
   )
 
   const restoreTrashedDocument = useCallback((id: string) => {
@@ -702,6 +771,7 @@ export default function ZhihuEditor() {
       const target = store.docs.find((doc) => doc.id === store.currentId)
       if (!target) return
       if (saveTimer.current !== null) window.clearTimeout(saveTimer.current)
+      if (target.id !== currentIdRef.current) captureDocumentView(currentIdRef.current, editorRef.current)
       docsRef.current = store.docs
       currentIdRef.current = target.id
       setDocs(store.docs)
@@ -726,7 +796,7 @@ export default function ZhihuEditor() {
       return md === doc.md && title === doc.title ? doc : { ...doc, md, title, at: Date.now() }
     })
     return () => onStoreReloaded(null)
-  }, [refreshDerived, scanIssues])
+  }, [captureDocumentView, refreshDerived, scanIssues])
 
   /* ---------- 启动器带过来的助手配置（#zhihu-token=…&zhihu-addr=…） ----------
      「开始使用.bat」启动助手之后，会把令牌通过地址栏 hash 带进来（hash 不会发给任何服务器），
@@ -755,6 +825,7 @@ export default function ZhihuEditor() {
   }, [flash])
 
   useEffect(() => {
+    if (LOCAL_FILE_EDITING) desktopZhihuConnection()
     applyLaunchConfig()
     window.addEventListener('hashchange', applyLaunchConfig)
     return () => window.removeEventListener('hashchange', applyLaunchConfig)
@@ -813,6 +884,12 @@ export default function ZhihuEditor() {
   useEffect(() => {
     if (editor) editorRef.current = editor
   }, [editor])
+
+  useLayoutEffect(() => {
+    if (!editor?.isInitialized || displayedDoc.current === currentId) return
+    displayedDoc.current = currentId
+    restoreDocumentView(currentId, editor)
+  }, [currentId, editor, restoreDocumentView])
 
   /* 深色下把"太暗的文字颜色"显示成近白色（文档里的行内 color 一个字不动，见 readableColors.ts） */
   useDimColorFix(theme, pageBackground.color, editor)
@@ -956,12 +1033,19 @@ export default function ZhihuEditor() {
     setTitle(name)
     mdRef.current = text
     setSavedAt(imported.at)
+    if (LOCAL_FILE_EDITING) {
+      setIssuesHidden(false)
+      if (fixNoteTimer.current !== null) window.clearTimeout(fixNoteTimer.current)
+      setFixNote(null)
+    }
     const ed = editorRef.current
     if (ed) {
       const { fixedMath } = actions.setMarkdown(ed, text)
       scanIssues()
       scheduleSave()
-      if (fixedMath) flash(`已修复 ${fixedMath} 处公式语法。`)
+      if (fixedMath && (!LOCAL_FILE_EDITING || !actions.collectBrokenImages(ed).length)) {
+        flash(`已修复 ${fixedMath} 处公式语法。`)
+      }
     }
     return imported
   }, [currentMarkdown, flash, scanIssues, scheduleSave, withCurrentContent, writeStore])
@@ -979,11 +1063,13 @@ export default function ZhihuEditor() {
       const left = actions.collectBrokenImages(ed).length
       flash(`已导入 ${result.fixed} 张资源图片${left ? `，另有 ${left} 张图片待处理` : ''}。`)
     }
+    return result
   }, [flash, scanIssues, scheduleSave])
 
   const openLocalMarkdown = useCallback(async (handle: LocalFileHandle, directory?: FileSystemDirectoryHandle, scope?: AssetScope) => {
     for (const [id, file] of localFiles) {
-      if (docsRef.current.some((doc) => doc.id === id && !doc.trashedAt) && await handle.isSameEntry(file.handle)) {
+      if (docsRef.current.some((doc) => doc.id === id && !doc.trashedAt) &&
+        await handle.isSameEntry(file.handle).catch(() => false)) {
         if (switchDoc(id) && directory) {
           rememberFile(id, { ...file, directory })
           await importFolderImages(id, directory, scope)
@@ -1219,15 +1305,23 @@ export default function ZhihuEditor() {
     const id = currentIdRef.current
     const linked = localFiles.get(id)
     void picker.showDirectoryPicker({ mode: forCurrentDocument ? 'read' : 'readwrite' }).then(async (directory) => {
-      if (forCurrentDocument && linked) {
+      if (forCurrentDocument) {
         if (currentIdRef.current !== id) return
-        if ((await directory.resolve(linked.handle))?.length !== 1) {
-          flash('请选择当前 Markdown 文件所在的文件夹。')
-          return
+        if (linked) {
+          const relative = await directory.resolve(linked.handle)
+          if (currentIdRef.current !== id) return
+          if (relative?.length !== 1) {
+            flash('请选择当前 Markdown 文件所在的文件夹。')
+            return
+          }
+          rememberFile(id, { ...linked, directory })
         }
-        rememberFile(id, { ...linked, directory })
-        await importFolderImages(id, directory)
-        if (currentIdRef.current === id) setIssuesHidden(false)
+        setIssuesHidden(false)
+        const result = await importFolderImages(id, directory)
+        if (result && !result.fixed) {
+          if (result.skipped.length) flash('找到资源图片，但文件过大或无法读取。')
+          else if (result.missing.length) flash('未找到文档引用的图片。请选择 Markdown 文件所在的文件夹。')
+        }
         return
       }
       const documents: typeof folderDocuments = []
@@ -1250,9 +1344,10 @@ export default function ZhihuEditor() {
   }, [flash, importFolderImages, localFiles, openLocalMarkdown, rememberFile, repairImages])
 
   /* ---------- 文件操作 ---------- */
-  const openMarkdownFile = useCallback(async () => {
+  // 双击 HTML 时直接导入所选内容。「打开方式」另有原文件写回和文件夹入口。
+  const openMarkdownFile = useCallback(async (linkOriginal = window.location.protocol !== 'file:') => {
     const picker = localFilePickers()
-    if (LOCAL_FILE_EDITING && picker.showOpenFilePicker && window.crypto?.subtle) {
+    if (linkOriginal && LOCAL_FILE_EDITING && picker.showOpenFilePicker && window.crypto?.subtle) {
       try {
         const [handle] = await picker.showOpenFilePicker({ types: markdownTypes })
         if (!handle) return
@@ -1294,10 +1389,12 @@ export default function ZhihuEditor() {
   const saveMarkdownFile = useCallback(() => {
     const md = currentMarkdown()
     const name = (titleRef.current.trim() || '文档') + '.md'
-    actions.downloadText(name, projectImportedImages(md, false), 'text/markdown;charset=utf-8')
+    const archive = projectImportedImages(md, false)
+    actions.downloadText(name, LOCAL_FILE_EDITING ? includeSourceFrontMatter(archive, localFiles.get(currentIdRef.current)) : archive,
+      'text/markdown;charset=utf-8')
     persistDraft(md)
     flash(`已存一份「${name}」（图片内嵌，自己看 / 备份用）。要发知乎请用「保存 → 导出知乎用 .md」。`)
-  }, [currentMarkdown, flash, persistDraft])
+  }, [currentMarkdown, flash, localFiles, persistDraft])
 
   const runLocalFileAction = useCallback(async (id: string, action: () => Promise<void>, failure: string) => {
     if (localOperationRef.current) return
@@ -1495,9 +1592,12 @@ export default function ZhihuEditor() {
       if (format === 'zip' && LOCAL_FILE_EDITING) {
         flash('正在打包 Markdown 和图片…')
         try {
-          const { blob, name, missing } = await packMarkdownAssets(ed, titleRef.current, assetScope)
+          const { blob, name, missing, online } = await packMarkdownAssets(ed, titleRef.current, assetScope,
+            localFiles.get(currentIdRef.current))
           actions.downloadBlob(name, blob)
-          flash(missing ? `已导出「${name}」。${missing} 张图片未找到，已保留原链接。` : `已导出「${name}」。`)
+          flash('已导出「' + name + '」。' +
+            (missing ? missing + ' 张本地图片未找到，已保留原路径。' : '') +
+            (online ? online + ' 张图片仍需联网，详见包内「联网图片.txt」。' : ''))
         } catch { flash('无法生成 Markdown 资源包。') }
         return
       }
@@ -1561,7 +1661,7 @@ export default function ZhihuEditor() {
         flash('导出出错：' + String(e).slice(0, 120))
       }
     },
-    [assetScope, exportHtmlFile, exportContentsTitle, flash, publication, saveCurrentFile, saveFileCopy, saveMarkdownFile, scheduleSave],
+    [assetScope, exportHtmlFile, exportContentsTitle, flash, localFiles, publication, saveCurrentFile, saveFileCopy, saveMarkdownFile, scheduleSave],
   )
 
   const reviewExport = useCallback((target: ExportTarget = 'docx') => {
@@ -1822,6 +1922,10 @@ export default function ZhihuEditor() {
       openZhihu: () => setZhihuOpen(true),
       pickImage: () => api.pickImage(),
       checkDocument,
+      importMarkdownDraft: LOCAL_FILE_EDITING ? () => void openMarkdownFile(false) : undefined,
+      importZhihuLink: LOCAL_FILE_EDITING && location.protocol === 'file:' ? () => setZhihuImportOpen(true) : undefined,
+      openOriginalMarkdown: LOCAL_FILE_EDITING &&
+        localFilePickers().showOpenFilePicker && window.crypto?.subtle ? () => void openMarkdownFile(true) : undefined,
       openDocumentFolder: LOCAL_FILE_EDITING && localFilePickers().showDirectoryPicker ? () => openDocumentFolder() : undefined,
       openWorkspace: LOCAL_FILE_EDITING && localFilePickers().showDirectoryPicker
         ? () => workspaceRoot ? workspace.setVisible((visible) => !visible) : workspace.choose() : undefined,
@@ -1855,7 +1959,7 @@ export default function ZhihuEditor() {
       writingFocus,
       exportMathDiag,
     }),
-    [api, checkDocument, exportMathDiag, openDocumentFolder, openMarkdownSource, reviewExport, workspace.choose,
+    [api, checkDocument, exportMathDiag, openDocumentFolder, openMarkdownFile, openMarkdownSource, reviewExport, workspace.choose,
       workspace.setVisible, workspaceRoot, writingFocus, toggleReading],
   )
 
@@ -1940,6 +2044,18 @@ export default function ZhihuEditor() {
         onOpenEffects={() => setEffectOpen(true)}
         onSaveAction={requestSave}
         hasLocalFile={Boolean(localFile)}
+        documentTabs={LOCAL_FILE_EDITING && !reading ? <DocumentTabs currentId={currentId} onSelect={switchDoc}
+          onClose={closeDocumentTab} onCreate={createDocument} tabs={openDocumentIds.flatMap((id) => {
+            const doc = activeDocs.find((item) => item.id === id)
+            if (!doc) return []
+            const file = localFiles.get(id)
+            const status = diskStatuses.get(id)
+            const diskPending = status && status.file === file && status.md === doc.md && !status.saved
+            const pending = pendingDraftIds.has(id) || Boolean(diskPending)
+            return [{ id, title: docLabel(id === currentId ? { ...doc, title } : doc), pending,
+              description: diskPending ? '有待写回原文件的改动' : pending ? '草稿有待保存'
+                : file ? `已关联原文件 ${file.handle.name}` : '浏览器草稿' }]
+          })} /> : undefined}
       />
 
       {/* 文档体检提示条：图片打不开 / 公式渲染不出来时自己浮出来 */}
@@ -1958,13 +2074,13 @@ export default function ZhihuEditor() {
             {issues.images > 0 && (
               <>
                 <span className="zh-fixbar__text">
-                  有 <b>{issues.images}</b> 张本地图片待导入。可选择 Markdown 所在的文件夹。
+                  有 <b>{issues.images}</b> 张本地图片待导入。请选择 Markdown 文件所在的文件夹。
                 </span>
                 <button
                   type="button"
                   className="zh-pill zh-pill--primary"
                   title="修复图片：选导出文件夹"
-                  onClick={() => localFile ? openDocumentFolder(true) : repairImages(true)}
+                  onClick={() => LOCAL_FILE_EDITING ? openDocumentFolder(true) : repairImages(true)}
                 >
                   加载资源文件夹
                 </button>
@@ -2024,7 +2140,10 @@ export default function ZhihuEditor() {
             setAutoAssets(enabled)
             try { localStorage.setItem('dadealbit-auto-assets', enabled ? 'on' : 'off') } catch { /* 当前会话仍可使用。 */ }
           }} />}
-        <div className="editor-card" data-writing-focus={!reading && writingFocus || undefined}>
+        <div className="editor-card" data-writing-focus={!reading && writingFocus || undefined}
+          id={LOCAL_FILE_EDITING && !reading ? 'zh-document-panel' : undefined}
+          role={LOCAL_FILE_EDITING && !reading ? 'tabpanel' : undefined}
+          aria-labelledby={LOCAL_FILE_EDITING && !reading ? documentTabId(currentId) : undefined}>
           <input
             className="zh-title"
             value={title}
@@ -2093,13 +2212,23 @@ export default function ZhihuEditor() {
         savedAt={savedAt}
         outlineOpen={outlineOpen}
         saveFailed={saveFailed}
+        fileModeReady={localFilesReady}
         localFileName={localFile?.handle.name}
         localFileStatus={localOperation === currentId ? '正在处理本地文件'
-          : diskStatus?.file === localFile && diskStatus?.id === currentId && diskStatus.md === storedMarkdown && diskStatus.saved
-            ? '已保存到原文件' : '原文件有待保存的改动'}
+          : pendingDraftIds.has(currentId) ? '原文件有待保存的改动'
+          : diskStatus?.file !== localFile || diskStatus?.md !== storedMarkdown ? '正在核对原文件'
+          : diskStatus?.saved ? '已保存到原文件' : '原文件有待保存的改动'}
         onToggleMarkdownInput={toggleMarkdownInput}
         onExport={requestSave}
       />
+
+      {zhihuImportOpen && <ZhihuImportModal onClose={() => setZhihuImportOpen(false)}
+        onImport={(article) => {
+          const opened = loadMarkdownFile(article.title + '.md', article.markdown)
+          if (!opened) return false
+          flash(article.linkedImages ? `知乎正文已导入。${article.linkedImages} 张图片保留为原网址。` : '知乎正文已导入为新草稿。')
+          return true
+        }} />}
 
       {sourceEdit && <MarkdownSourceModal initial={sourceEdit.initial} onPreview={previewSource} onReview={checkSource}
         onApply={applyMarkdownSource} onSave={saveCurrentFile}
@@ -2112,6 +2241,7 @@ export default function ZhihuEditor() {
 
       {assetDocumentId === currentId && editor && !reading && <DocumentAssetsModal key={assetDocumentId}
         editor={editor} scope={assetScope} canApply={() => currentIdRef.current === assetDocumentId}
+        onRemoteSaved={() => { scheduleSave(); scanIssues() }}
         onClose={() => setAssetDocumentId(undefined)} onApplied={(count) => {
           setAssetDocumentId(undefined)
           scheduleSave()

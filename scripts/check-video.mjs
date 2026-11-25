@@ -70,9 +70,9 @@ const openApp = async () => {
 
 const openVideoModal = async (page) => {
   await page.keyboard.press('Escape').catch(() => {})
-  const insert = page.getByTitle('插入', { exact: true })
-  if (await insert.isVisible()) await insert.click()
-  await page.getByRole('button', { name: '视频', exact: true }).click()
+  const video = page.getByRole('button', { name: '视频', exact: true })
+  if (!await video.isVisible()) await page.getByTitle('插入', { exact: true }).click()
+  await video.click()
   await page.waitForSelector('.zh-modal--video', { timeout: 5000 })
 }
 const insertButton = (page) =>
